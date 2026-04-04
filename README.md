@@ -15,7 +15,7 @@ This addresses a specific limitation of lexical search (`grep`, `ripgrep`): file
 curl -fsSL https://raw.githubusercontent.com/jcmaslan/TurboFind/main/scripts/install.sh | bash
 ```
 
-This clones the repo to `~/.turbofind`, installs the Python package, and pulls the embedding model. Then set your API key:
+This downloads TurboFind to `~/.turbofind`, installs the Python package, and pulls the embedding model if Ollama is running. Then set your API key:
 
 ```bash
 export ANTHROPIC_API_KEY="your-key-here"
