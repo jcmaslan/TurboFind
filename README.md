@@ -6,32 +6,41 @@ This addresses a specific limitation of lexical search (`grep`, `ripgrep`): file
 
 ## Prerequisites
 - Python 3.9+
-- [Ollama](https://ollama.com) installed and running locally:
-  ```bash
-  curl -fsSL https://ollama.com/install.sh | sh
-  ```
+- [Ollama](https://ollama.com) installed and running locally
 - Anthropic API Key
 
 ## Installation
 
-1. Clone this repository or copy its contents.
-2. Install the package locally:
-   ```bash
-   pip install -e .
-   ```
-3. Pull the embedding model:
-   ```bash
-   ollama pull nomic-embed-text
-   ```
-4. Set your API key:
-   ```bash
-   export ANTHROPIC_API_KEY="your-key-here"
-   ```
-5. (Optional) Override the Claude model or Ollama host:
-   ```bash
-   export TURBOFIND_MODEL="claude-sonnet-4-6-20260215"  # default: claude-haiku-4-5-20251001
-   export OLLAMA_HOST="localhost:11434"               # default
-   ```
+```bash
+curl -fsSL https://raw.githubusercontent.com/jcmaslan/TurboFind/main/scripts/install.sh | bash
+```
+
+This clones the repo to `~/.turbofind`, installs the Python package, and pulls the embedding model. Then set your API key:
+
+```bash
+export ANTHROPIC_API_KEY="your-key-here"
+```
+
+<details>
+<summary>Manual installation</summary>
+
+```bash
+git clone https://github.com/jcmaslan/TurboFind.git
+pip install -e TurboFind
+ollama pull nomic-embed-text
+export ANTHROPIC_API_KEY="your-key-here"
+```
+</details>
+
+<details>
+<summary>Optional environment overrides</summary>
+
+```bash
+export TURBOFIND_MODEL="claude-sonnet-4-6-20260215"  # default: claude-haiku-4-5-20251001
+export OLLAMA_HOST="localhost:11434"                  # default
+export TURBOFIND_HOME="/custom/install/path"          # default: ~/.turbofind
+```
+</details>
 
 ## Workflow
 
