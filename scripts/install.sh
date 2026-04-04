@@ -4,18 +4,14 @@ set -euo pipefail
 # TurboFind Installer
 # Usage: curl -fsSL https://raw.githubusercontent.com/jcmaslan/TurboFind/main/scripts/install.sh | bash
 
-REPO="https://github.com/jcmaslan/TurboFind.git"
+TARBALL="https://github.com/jcmaslan/TurboFind/archive/refs/heads/main.tar.gz"
 INSTALL_DIR="${TURBOFIND_HOME:-$HOME/.turbofind}"
 
 echo "Installing TurboFind..."
 
-# Clone or update
-if [ -d "$INSTALL_DIR" ]; then
-  echo "Updating existing installation at $INSTALL_DIR"
-  git -C "$INSTALL_DIR" pull --ff-only
-else
-  git clone "$REPO" "$INSTALL_DIR"
-fi
+# Download and extract (overwrites existing installation)
+mkdir -p "$INSTALL_DIR"
+curl -fsSL "$TARBALL" | tar xz --strip-components=1 -C "$INSTALL_DIR"
 
 # Install Python package
 pip install -e "$INSTALL_DIR" --quiet
