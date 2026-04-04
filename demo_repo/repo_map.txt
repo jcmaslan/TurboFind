@@ -1,0 +1,27 @@
+# Architectural Intent and Boundaries
+
+## Overview
+This repository contains 4 distinct microservices that make up our legacy SaaS backend. 
+- Authentication Service
+- Billing Service
+- API Gateway
+- Analytics Service
+
+## Boundaries
+1. **Auth Service (`services/auth/`)**: 
+   - Owns all user identity, login, session validation, and JWT issuing.
+   - Other services MUST call the Auth Service to validate tokens.
+   - Other services MUST NOT directly inspect session formats, read cookie states from Redis manually, or bypass permission checks.
+
+2. **Gateway Service (`services/gateway/`)**:
+   - The primary entry point for all API requests.
+   - Hands off requests to internal services via routing.
+   - Enforces generic rules like rate limiting, but must defer authentication decisions to Auth.
+
+3. **Billing Service (`services/billing/`)**:
+   - Manages Stripe subscriptions, invoices, and limits.
+   - Requires valid active sessions, but cannot manipulate sessions.
+
+4. **Analytics Service (`services/analytics/`)**:
+   - Telemetry aggregator. 
+   - Should never manage state. Reads event logs and outputs metrics.

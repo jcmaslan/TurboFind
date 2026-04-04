@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools==82.0.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "turbofind"
+version = "0.1.0"
+description = "Semantic code search and LLM-driven indexing CLI for codebase migrations."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "usearch==2.23.0",
+    "anthropic==0.86.0",
+    "ollama==0.6.1",
+    "numpy==2.4.3",
+    "pathspec==1.0.4",
+    "tomli==2.4.0"
+]
+
+[project.scripts]
+tf-init = "turbofind.init:main"
+tf-search = "turbofind.search:main"
+tf-upsert = "turbofind.upsert:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
