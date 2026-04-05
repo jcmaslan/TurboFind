@@ -141,7 +141,7 @@ echo "   File deleted by test harness"
 DELETE_PROMPT="The file $DEL_FILE has been deleted from the repository. Follow the POST-DELETE RULE in CLAUDE.md to clean up the index."
 echo "   Asking Claude to update index..."
 claude -p "$DELETE_PROMPT" --output-format text \
-  --allowedTools 'Bash(tf-upsert *)' 'Read' \
+  --allowedTools 'Bash(tf-upsert:*)' 'Read' \
   > "$OUTDIR/test3_output.txt" 2>&1
 
 INDEXED_AFTER_DEL=$(python3 -c "

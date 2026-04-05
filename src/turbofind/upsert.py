@@ -204,8 +204,8 @@ def main():
     parser.add_argument("paths", nargs="*", help="File path(s) or glob pattern(s) to index")
     parser.add_argument("--index", default=DEFAULT_INDEX, help=f"Named index to upsert into (default: {DEFAULT_INDEX})")
     parser.add_argument("--input", dest="text_input", default=None, help="File path or '-' for stdin; indexes arbitrary text instead of source files")
-    parser.add_argument("--kind", default="insight", choices=["file", "insight", "coupling", "decision"],
-                        help="Result kind for --input entries (default: insight)")
+    parser.add_argument("--kind", default="insight", choices=["insight", "coupling", "decision"],
+                        help="Result kind for --input entries (default: insight); 'file' kind is set automatically when indexing source files")
     parser.add_argument("--summary", default=None, help="Short summary for --input entries (auto-generated if omitted)")
     parser.add_argument("--ref", action="append", dest="referenced_files", default=None,
                         help="File path referenced by this --input entry (repeatable); SHA1 stored for staleness detection")

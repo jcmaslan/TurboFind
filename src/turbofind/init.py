@@ -36,6 +36,10 @@ def install():
         if SENTINEL_START in existing:
             # Replace existing block with current version
             start = existing.index(SENTINEL_START)
+            if SENTINEL_END not in existing:
+                print("⚠️  CLAUDE.md has a corrupted TurboFind block (missing end sentinel).")
+                print("   Please fix it manually or delete the line containing '<!-- turbofind -->' and re-run tf-init.")
+                return
             end = existing.index(SENTINEL_END) + len(SENTINEL_END)
             if end < len(existing) and existing[end] == "\n":
                 end += 1

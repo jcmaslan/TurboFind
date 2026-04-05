@@ -88,7 +88,7 @@ def main():
             continue
         kind = meta.get("kind", "file")
         if kind == "file":
-            dedup_key = meta["file_path"]
+            dedup_key = meta.get("file_path", str(k))
         else:
             dedup_key = meta.get("content_sha1", k)
         if dedup_key not in seen:
@@ -136,9 +136,9 @@ def _print_text_result(idx, sim, meta, kind, project_root):
     """Print a single result in plain text format."""
     stale_marker = " (STALE)" if _check_stale(meta, project_root) else ""
     if kind == "file":
-        filepath = meta["file_path"]
+        filepath = meta.get("file_path", "unknown")
         print(f"[{idx}] [{kind}] {filepath} (score: {sim:.3f}){stale_marker}")
-        print(f"    Lines {meta['start_line']}-{meta['end_line']}: {meta['core_intent']}")
+        print(f"    Lines {meta.get('start_line', '?')}-{meta.get('end_line', '?')}: {meta.get('core_intent', '')}")
     elif kind == "coupling":
         summary = meta.get("summary", "")
         ref_files = meta.get("referenced_files", {})
@@ -156,9 +156,9 @@ def _print_visual_result(idx, bar, sim, meta, kind, project_root):
     """Print a single result with colored score bar."""
     stale_marker = " (STALE)" if _check_stale(meta, project_root) else ""
     if kind == "file":
-        filepath = meta["file_path"]
+        filepath = meta.get("file_path", "unknown")
         print(f"[{idx}] {bar} {sim:.3f}  [{kind}] {filepath}{stale_marker}")
-        print(f"              Lines {meta['start_line']}-{meta['end_line']}: {meta['core_intent']}")
+        print(f"              Lines {meta.get('start_line', '?')}-{meta.get('end_line', '?')}: {meta.get('core_intent', '')}")
     elif kind == "coupling":
         ref_files = meta.get("referenced_files", {})
         files_str = " -> ".join(ref_files.keys()) if ref_files else "unknown"
