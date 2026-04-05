@@ -181,8 +181,5 @@ cython_debug/
 .cursorindexingignore
 
 # TurboFind runtime artifacts
-.turbofind.usearch
-.turbofind.meta.json
-.turbofind.meta.json.tmp
-.turbofind.lock
+.turbofind/
 /test_results

@@ -67,14 +67,37 @@ tf-upsert . --dry-run
 If you create a `repo_map.txt` in your project root describing the high-level architecture and service boundaries, TurboFind will include it as cached context in every Claude synthesis call. This improves Claude's ability to detect cross-service coupling but is not required — indexing works without it. See [demo_repo/repo_map.txt](demo_repo/repo_map.txt) for an example.
 
 ### 3. Let Claude Run
-Launch Claude Code and ask it to refactor structural elements. Claude will automatically use `tf-search` to understand the codebase and `tf-upsert` to keep the vector database perfectly synced as it makes changes.
+Launch Claude Code and ask it to refactor structural elements. Claude will automatically use `tf-search` to understand the codebase and `tf-upsert` to keep the vector database synced as Claude makes changes.
 
 ## Commands
 
 - `tf-init` — Initialize TurboFind in the current project (appends instructions to `CLAUDE.md`)
-- `tf-init --remove` — Remove TurboFind instructions from `CLAUDE.md`
+- `tf-init --remove` — Remove TurboFind instructions from `CLAUDE.md` of the current project
 - `tf-search "<query>"` — Semantic intent search across the indexed codebase
 - `tf-upsert <path>` — Index a file, directory, or glob pattern
 - `tf-upsert . --dry-run` — Preview indexing without calling APIs
 - `tf-upsert . --max-files 50` — Limit batch size
 - `tf-upsert . --cost-limit 10.0` — Set cost confirmation threshold
+
+## A/B Testing
+
+To compare Claude Code's file discovery performance with and without TurboFind, run the A/B test script from inside your indexed repo directory:
+
+```bash
+cd demo_repo && bash ../scripts/ab_test.sh
+```
+
+This runs Claude Code twice on the same prompt — once without TurboFind (standard tools only) and once with `tf-search` available — then scores both runs against a ground truth set of hard-to-find files and generates an evaluation report.
+
+To run against your own codebase, create a `.ab_test.conf` file in your repo root with a custom prompt and ground truth:
+
+```bash
+PROMPT="Find all files involved in payment processing, including indirect dependencies."
+GROUND_TRUTH=(
+  "src/payments/stripe_client.py"
+  "src/webhooks/invoice_handler.py"
+  "src/utils/currency.py"
+)
+```
+
+Then run `bash path/to/scripts/ab_test.sh` from your repo directory. The script loads `.ab_test.conf` if present, otherwise falls back to the demo defaults.

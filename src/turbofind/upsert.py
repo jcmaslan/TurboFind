@@ -3,7 +3,9 @@ import sys
 import uuid
 import re
 from anthropic import Anthropic
-from .core import check_ollama, load_index, save_index, embed_text, find_project_root, index_lock
+from .core import (check_ollama, load_index, save_index, embed_text,
+                   find_project_root, index_lock, file_sha1, text_sha1,
+                   DEFAULT_INDEX)
 from .prompts import SYSTEM_PROMPT
 import numpy as np
 
@@ -28,10 +30,10 @@ def synthesize_with_claude(filepath, content, project_root):
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set.")
-    
+
     client = Anthropic(api_key=api_key)
     repo_map = get_repo_map(project_root)
-    
+
     system_message = [
         {
             "type": "text",
@@ -43,7 +45,7 @@ def synthesize_with_claude(filepath, content, project_root):
             "cache_control": {"type": "ephemeral"}
         }
     ]
-    
+
     model = os.environ.get("TURBOFIND_MODEL", DEFAULT_MODEL)
     response = client.messages.create(
         model=model,
@@ -90,17 +92,19 @@ def upsert_single_file(filepath, project_root, index, metadata):
 
     removed_count = nuke_file(rel_path, index, metadata)
     if removed_count > 0:
-        print(f"  🗑️ Removed {removed_count} old vectors")
+        print(f"  Removed {removed_count} old vectors")
 
     with open(filepath, 'r') as f:
         content = f.read()
 
-    print(f"  🤖 Synthesizing with Claude...")
+    content_hash = file_sha1(filepath)
+
+    print(f"  Synthesizing with Claude...")
     synthesis = synthesize_with_claude(rel_path, content, project_root)
 
     severity = extract_xml_tag(synthesis, "legacy_coupling_severity")
     core_intent = extract_xml_tag(synthesis, "core_intent")
-    print(f"  ✅ Synthesis complete (severity: {severity}/10)")
+    print(f"  Synthesis complete (severity: {severity}/10)")
 
     chunks = chunk_file(rel_path, content)
 
@@ -111,14 +115,45 @@ def upsert_single_file(filepath, project_root, index, metadata):
         vid = get_unique_id()
         index.add(vid, np.array(vector, dtype=np.float32))
         metadata[vid] = {
+            "kind": "file",
             "file_path": rel_path,
             "start_line": chunk["start"],
             "end_line": chunk["end"],
-            "core_intent": core_intent
+            "core_intent": core_intent,
+            "content_sha1": content_hash
         }
 
-    print(f"  📐 Embedded {len(chunks)} chunks")
+    print(f"  Embedded {len(chunks)} chunks")
     return len(chunks)
+
+
+def upsert_text_input(text, index, metadata, kind="insight", summary=None, referenced_files=None):
+    """Index arbitrary text input (debug insight, coupling, decision, etc.)."""
+    content_hash = text_sha1(text)
+
+    # Compute referenced file hashes
+    ref_hashes = {}
+    if referenced_files:
+        for fpath in referenced_files:
+            if os.path.exists(fpath):
+                ref_hashes[fpath] = file_sha1(fpath)
+            else:
+                ref_hashes[fpath] = "not_found"
+
+    vector = embed_text(text, prefix="search_document: ")
+    vid = get_unique_id()
+    index.add(vid, np.array(vector, dtype=np.float32))
+
+    entry = {
+        "kind": kind,
+        "summary": summary or text[:200],
+        "content_sha1": content_hash,
+    }
+    if ref_hashes:
+        entry["referenced_files"] = ref_hashes
+
+    metadata[vid] = entry
+    return 1
 
 
 def resolve_paths(args_paths, project_root, exclusion_spec):
@@ -166,13 +201,102 @@ def resolve_paths(args_paths, project_root, exclusion_spec):
 
 def main():
     parser = argparse.ArgumentParser(description="TurboFind: Semantic index upsert")
-    parser.add_argument("paths", nargs="+", help="File path(s) or glob pattern(s) to index")
+    parser.add_argument("paths", nargs="*", help="File path(s) or glob pattern(s) to index")
+    parser.add_argument("--index", default=DEFAULT_INDEX, help=f"Named index to upsert into (default: {DEFAULT_INDEX})")
+    parser.add_argument("--input", dest="text_input", default=None, help="File path or '-' for stdin; indexes arbitrary text instead of source files")
+    parser.add_argument("--kind", default="insight", choices=["file", "insight", "coupling", "decision"],
+                        help="Result kind for --input entries (default: insight)")
+    parser.add_argument("--summary", default=None, help="Short summary for --input entries (auto-generated if omitted)")
+    parser.add_argument("--ref", action="append", dest="referenced_files", default=None,
+                        help="File path referenced by this --input entry (repeatable); SHA1 stored for staleness detection")
     parser.add_argument("--max-file-size", type=int, default=None, help="Per-file: max size in bytes (default: 51200)")
     parser.add_argument("--max-lines", type=int, default=None, help="Per-file: max line count (default: 2000)")
     parser.add_argument("--max-files", type=int, default=None, help="Per-batch: max number of files to process (default: 100)")
     parser.add_argument("--cost-limit", type=float, default=None, help="Per-batch: pause for confirmation above this $ amount (default: 5.00)")
+    parser.add_argument("--remove", action="append", dest="remove_paths", default=None,
+                        help="Remove a deleted file from the index (repeatable)")
+    parser.add_argument("--prune", action="store_true",
+                        help="Remove all index entries whose source files no longer exist on disk")
     parser.add_argument("--dry-run", action="store_true", help="Preview what would be indexed without calling any APIs")
     args = parser.parse_args()
+
+    # ── Remove mode ──
+    if args.remove_paths:
+        project_root = find_project_root()
+        with index_lock(project_root):
+            index, metadata = load_index(project_root=project_root, index_name=args.index)
+            total_removed = 0
+            for filepath in args.remove_paths:
+                rel_path = os.path.relpath(os.path.abspath(filepath), project_root)
+                count = nuke_file(rel_path, index, metadata)
+                if count > 0:
+                    print(f"Removed {count} vectors for {rel_path}")
+                    total_removed += count
+                else:
+                    print(f"No index entries found for {rel_path}")
+            if total_removed > 0:
+                save_index(index, metadata, project_root=project_root, index_name=args.index)
+        return
+
+    # ── Prune mode ──
+    if args.prune:
+        project_root = find_project_root()
+        with index_lock(project_root):
+            index, metadata = load_index(project_root=project_root, index_name=args.index)
+            stale_files = set()
+            for vid, entry in metadata.items():
+                fpath = entry.get("file_path")
+                if fpath and not os.path.exists(os.path.join(project_root, fpath)):
+                    stale_files.add(fpath)
+            total_removed = 0
+            for fpath in sorted(stale_files):
+                count = nuke_file(fpath, index, metadata)
+                print(f"Pruned {count} vectors for {fpath} (file no longer exists)")
+                total_removed += count
+            if total_removed > 0:
+                save_index(index, metadata, project_root=project_root, index_name=args.index)
+                print(f"Pruned {total_removed} vectors from {len(stale_files)} deleted files.")
+            else:
+                print("No stale entries found.")
+        return
+
+    # ── Text input mode (Phase 2) ──
+    if args.text_input is not None:
+        if args.text_input == "-":
+            text = sys.stdin.read()
+        else:
+            with open(args.text_input, 'r') as f:
+                text = f.read()
+
+        if not text.strip():
+            print("Empty input -- nothing to index.")
+            sys.exit(0)
+
+        try:
+            check_ollama()
+        except RuntimeError as e:
+            print(e)
+            sys.exit(1)
+
+        # Determine project root from cwd for text input mode
+        project_root = find_project_root()
+
+        with index_lock(project_root):
+            index, metadata = load_index(project_root=project_root, index_name=args.index)
+            count = upsert_text_input(
+                text, index, metadata,
+                kind=args.kind,
+                summary=args.summary,
+                referenced_files=args.referenced_files,
+            )
+            save_index(index, metadata, project_root=project_root, index_name=args.index)
+
+        print(f"Indexed 1 entry into '{args.index}' (kind: {args.kind})")
+        return
+
+    # ── Source file mode (original behavior) ──
+    if not args.paths:
+        parser.error("paths are required when not using --input")
 
     # Discover project root from the first path
     first_path = os.path.abspath(args.paths[0])
@@ -213,8 +337,8 @@ def main():
             cost, time_ms = estimate_file(f)
             total_cost += cost
             total_time_ms += time_ms
-            status = "✓" if ok else f"SKIP ({reason})"
-            print(f"  [{i+1}] {rel} — ${cost:.4f}, ~{time_ms:,}ms — {status}")
+            status = "OK" if ok else f"SKIP ({reason})"
+            print(f"  [{i+1}] {rel} -- ${cost:.4f}, ~{time_ms:,}ms -- {status}")
         if len(files) > max_files:
             print(f"\n  ... and {len(files) - max_files} more files (would exceed --max-files {max_files})")
         total_time_s = total_time_ms / 1000
@@ -230,7 +354,7 @@ def main():
         sys.exit(1)
 
     with index_lock(project_root):
-        index, metadata = load_index(project_root=project_root)
+        index, metadata = load_index(project_root=project_root, index_name=args.index)
 
         processed = 0
         skipped = 0
@@ -241,7 +365,7 @@ def main():
             for filepath in files:
                 if processed >= max_files:
                     remaining = len(files) - processed - skipped
-                    print(f"\n⏸  Reached --max-files limit ({max_files}). {remaining} files remaining.")
+                    print(f"\nReached --max-files limit ({max_files}). {remaining} files remaining.")
                     break
 
                 rel_path = os.path.relpath(filepath, project_root)
@@ -249,7 +373,7 @@ def main():
                 # Per-file limit check
                 ok, reason = check_file_limits(filepath, config)
                 if not ok:
-                    print(f"⏭  Skipping {rel_path}: {reason}")
+                    print(f"SKIP {rel_path}: {reason}")
                     skipped += 1
                     continue
 
@@ -258,11 +382,11 @@ def main():
                 cumulative_cost += est_cost
 
                 if cumulative_cost > cost_limit and not confirmed_over_limit:
-                    print(f"\n⚠️  Estimated cumulative cost: ${cumulative_cost:.2f} (limit: ${cost_limit:.2f})")
+                    print(f"\nWARNING: Estimated cumulative cost: ${cumulative_cost:.2f} (limit: ${cost_limit:.2f})")
                     response = input("Continue? [y/N] ").strip().lower()
                     if response != "y":
                         print("Stopped.")
-                        save_index(index, metadata, project_root=project_root)
+                        save_index(index, metadata, project_root=project_root, index_name=args.index)
                         sys.exit(0)
                     confirmed_over_limit = True
 
@@ -272,16 +396,15 @@ def main():
                     upsert_single_file(filepath, project_root, index, metadata)
                     processed += 1
                 except Exception as e:
-                    print(f"  ❌ Failed: {e}")
+                    print(f"  FAILED: {e}")
                     skipped += 1
 
         except KeyboardInterrupt:
-            print(f"\n\n⏹  Interrupted. Saving {processed} files indexed so far...")
+            print(f"\n\nInterrupted. Saving {processed} files indexed so far...")
 
-        save_index(index, metadata, project_root=project_root)
-        print(f"\n✅ Done. Processed {processed} files, skipped {skipped}. Est. total cost: ${cumulative_cost:.2f}")
+        save_index(index, metadata, project_root=project_root, index_name=args.index)
+        print(f"\nDone. Processed {processed} files, skipped {skipped}. Est. total cost: ${cumulative_cost:.2f}")
 
 
 if __name__ == "__main__":
     main()
-

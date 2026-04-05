@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 import urllib.request
 import urllib.error
 from contextlib import contextmanager
@@ -12,14 +13,17 @@ except ImportError:
     _USE_FCNTL = False
     import msvcrt
 
-INDEX_FILENAME = ".turbofind.usearch"
-METADATA_FILENAME = ".turbofind.meta.json"
-LOCK_FILENAME = ".turbofind.lock"
-ROOT_MARKERS = ["repo_map.txt", ".turbofind.toml", ".git"]
+TURBOFIND_DIR = ".turbofind"
+INDEXES_DIR = "indexes"
+INDEX_FILENAME = "index.usearch"
+METADATA_FILENAME = "meta.json"
+LOCK_FILENAME = "lock"
+DEFAULT_INDEX = "code-intent"
+ROOT_MARKERS = ["repo_map.txt", ".turbofind", ".turbofind.toml", ".git"]
 
 def find_project_root(start_path=None):
     """Walk up from start_path looking for project root markers.
-    Checks for .git/, .turbofind.toml, and repo_map.txt in priority order.
+    Checks for .git/, .turbofind/, .turbofind.toml, and repo_map.txt in priority order.
     Falls back to cwd if no marker is found."""
     current = os.path.abspath(start_path or os.getcwd())
     while True:
@@ -44,20 +48,27 @@ def check_ollama():
         if response.status == 200:
             return True
     except (urllib.error.URLError, ConnectionError):
-        raise RuntimeError(f"Ollama is not reachable at {host} — run `ollama serve` first.")
-    raise RuntimeError(f"Ollama is not reachable at {host} — run `ollama serve` first.")
+        raise RuntimeError(f"Ollama is not reachable at {host} -- run `ollama serve` first.")
+    raise RuntimeError(f"Ollama is not reachable at {host} -- run `ollama serve` first.")
+
+def _index_dir(project_root, index_name):
+    """Return the directory path for a named index, creating it if needed."""
+    d = os.path.join(project_root, TURBOFIND_DIR, INDEXES_DIR, index_name)
+    os.makedirs(d, exist_ok=True)
+    return d
 
 @contextmanager
 def index_lock(project_root):
     """Acquire an exclusive file lock for the duration of an index read-modify-write cycle.
     Uses fcntl on macOS/Linux and msvcrt on Windows."""
-    lock_path = os.path.join(project_root, LOCK_FILENAME)
+    lock_dir = os.path.join(project_root, TURBOFIND_DIR)
+    os.makedirs(lock_dir, exist_ok=True)
+    lock_path = os.path.join(lock_dir, LOCK_FILENAME)
     lock_fd = open(lock_path, "w")
     try:
         if _USE_FCNTL:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
         else:
-            # Windows: lock the first byte of the file
             msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
         yield
     finally:
@@ -67,33 +78,34 @@ def index_lock(project_root):
             msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
         lock_fd.close()
 
-def load_index(project_root=None, ndim=768):
-    """Loads usearch index and metadata. Returns (index, metadata_dict).
+def load_index(project_root=None, index_name=DEFAULT_INDEX, ndim=768):
+    """Loads usearch index and metadata for a named index. Returns (index, metadata_dict).
     Caller MUST hold index_lock() during the full read-modify-write cycle."""
     root = project_root or find_project_root()
-    index_path = os.path.join(root, INDEX_FILENAME)
-    meta_path = os.path.join(root, METADATA_FILENAME)
+    d = _index_dir(root, index_name)
+    index_path = os.path.join(d, INDEX_FILENAME)
+    meta_path = os.path.join(d, METADATA_FILENAME)
 
     index = Index(ndim=ndim, metric="cos", dtype="i8")
     if os.path.exists(index_path):
         index.load(index_path)
-        
+
     metadata = {}
     if os.path.exists(meta_path):
         with open(meta_path, 'r') as f:
             metadata = json.load(f)
             metadata = {int(k): v for k, v in metadata.items()}
-            
+
     return index, metadata
 
-def save_index(index, metadata, project_root=None):
-    """Saves usearch index and metadata atomically.
+def save_index(index, metadata, project_root=None, index_name=DEFAULT_INDEX):
+    """Saves usearch index and metadata atomically for a named index.
     Caller MUST hold index_lock()."""
     root = project_root or find_project_root()
-    index.save(os.path.join(root, INDEX_FILENAME))
+    d = _index_dir(root, index_name)
+    index.save(os.path.join(d, INDEX_FILENAME))
 
-    # Write metadata to a temp file then rename for atomic replacement
-    meta_path = os.path.join(root, METADATA_FILENAME)
+    meta_path = os.path.join(d, METADATA_FILENAME)
     tmp_path = meta_path + ".tmp"
     with open(tmp_path, 'w') as f:
         json.dump(metadata, f, indent=2)
@@ -116,3 +128,14 @@ def embed_text(text, prefix=""):
     except Exception as e:
         raise RuntimeError(f"Failed to generate embedding via Ollama: {e}")
 
+def file_sha1(filepath):
+    """Compute SHA1 hex digest of a file's contents."""
+    h = hashlib.sha1()
+    with open(filepath, 'rb') as f:
+        for chunk in iter(lambda: f.read(8192), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+def text_sha1(text):
+    """Compute SHA1 hex digest of a string."""
+    return hashlib.sha1(text.encode('utf-8')).hexdigest()
