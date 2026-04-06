@@ -1,12 +1,17 @@
 import os
 import sys
 import uuid
+import json
 import re
+import argparse
+import glob as globlib
 from anthropic import Anthropic
 from .core import (check_ollama, load_index, save_index, embed_text,
                    find_project_root, index_lock, file_sha1, text_sha1,
-                   DEFAULT_INDEX)
+                   load_graph, save_graph, DEFAULT_INDEX)
 from .prompts import SYSTEM_PROMPT
+from .ast_utils import extract_ast
+from .config import load_config, load_exclusion_spec, check_file_limits, estimate_file, compute_max_depth, SOURCE_EXTENSIONS
 import numpy as np
 
 CHUNK_SIZE = 100
@@ -26,7 +31,7 @@ def nuke_file(filepath, index, metadata):
         del metadata[vid]
     return len(ids_to_remove)
 
-def synthesize_with_claude(filepath, content, project_root):
+def synthesize_with_claude(filepath, content, project_root, graph=None):
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set.")
@@ -41,10 +46,20 @@ def synthesize_with_claude(filepath, content, project_root):
         },
         {
             "type": "text",
-            "text": f"Global Context (repo_map.txt):\n{repo_map}",
-            "cache_control": {"type": "ephemeral"}
+            "text": f"Global Context (repo_map.txt):\n{repo_map}"
         }
     ]
+
+    if graph:
+        graph_text = json.dumps(graph, indent=2)
+        system_message.append({
+            "type": "text",
+            "text": f"<global_ast_graph>\n{graph_text}\n</global_ast_graph>",
+            "cache_control": {"type": "ephemeral"}
+        })
+    else:
+        # Fallback to caching the repo map if no graph
+        system_message[-1]["cache_control"] = {"type": "ephemeral"}
 
     model = os.environ.get("TURBOFIND_MODEL", DEFAULT_MODEL)
     response = client.messages.create(
@@ -81,12 +96,8 @@ def get_unique_id():
     # usearch prefers integer keys, generate a random 64-bit int
     return uuid.uuid4().int >> 64
 
-import argparse
-import glob as globlib
-from .config import load_config, load_exclusion_spec, check_file_limits, estimate_file, SOURCE_EXTENSIONS
 
-
-def upsert_single_file(filepath, project_root, index, metadata):
+def upsert_single_file(filepath, project_root, index, metadata, config=None, graph=None):
     """Process a single file through the full Nuke-Synthesize-Chunk-Embed-Pave pipeline."""
     rel_path = os.path.relpath(filepath, project_root)
 
@@ -99,8 +110,21 @@ def upsert_single_file(filepath, project_root, index, metadata):
 
     content_hash = file_sha1(filepath)
 
+    if graph is not None and config is not None:
+        budget = config.get("graph", {}).get("max_tokens", 128000)
+        default_depth = config.get("per_file", {}).get("max_depth", 4)
+        max_depth = compute_max_depth(graph, budget, default_depth)
+        if max_depth > 0:
+            print(f"  Extracting AST...")
+            ast_dict = extract_ast(filepath, content, max_depth)
+            if ast_dict:
+                graph[rel_path] = ast_dict
+                print(f"  AST extracted successfully")
+        else:
+            print(f"  Skipping AST extraction (graph token budget reached)")
+
     print(f"  Synthesizing with Claude...")
-    synthesis = synthesize_with_claude(rel_path, content, project_root)
+    synthesis = synthesize_with_claude(rel_path, content, project_root, graph)
 
     severity = extract_xml_tag(synthesis, "legacy_coupling_severity")
     core_intent = extract_xml_tag(synthesis, "core_intent")
@@ -225,10 +249,13 @@ def main():
         project_root = find_project_root()
         with index_lock(project_root):
             index, metadata = load_index(project_root=project_root, index_name=args.index)
+            graph = load_graph(project_root=project_root)
             total_removed = 0
             for filepath in args.remove_paths:
                 rel_path = os.path.relpath(os.path.abspath(filepath), project_root)
                 count = nuke_file(rel_path, index, metadata)
+                if rel_path in graph:
+                    del graph[rel_path]
                 if count > 0:
                     print(f"Removed {count} vectors for {rel_path}")
                     total_removed += count
@@ -236,6 +263,7 @@ def main():
                     print(f"No index entries found for {rel_path}")
             if total_removed > 0:
                 save_index(index, metadata, project_root=project_root, index_name=args.index)
+            save_graph(graph, project_root=project_root)
         return
 
     # ── Prune mode ──
@@ -243,6 +271,7 @@ def main():
         project_root = find_project_root()
         with index_lock(project_root):
             index, metadata = load_index(project_root=project_root, index_name=args.index)
+            graph = load_graph(project_root=project_root)
             stale_files = set()
             for vid, entry in metadata.items():
                 fpath = entry.get("file_path")
@@ -251,6 +280,8 @@ def main():
             total_removed = 0
             for fpath in sorted(stale_files):
                 count = nuke_file(fpath, index, metadata)
+                if fpath in graph:
+                    del graph[fpath]
                 print(f"Pruned {count} vectors for {fpath} (file no longer exists)")
                 total_removed += count
             if total_removed > 0:
@@ -258,6 +289,7 @@ def main():
                 print(f"Pruned {total_removed} vectors from {len(stale_files)} deleted files.")
             else:
                 print("No stale entries found.")
+            save_graph(graph, project_root=project_root)
         return
 
     # ── Text input mode (Phase 2) ──
@@ -355,6 +387,7 @@ def main():
 
     with index_lock(project_root):
         index, metadata = load_index(project_root=project_root, index_name=args.index)
+        graph = load_graph(project_root=project_root)
 
         processed = 0
         skipped = 0
@@ -393,7 +426,7 @@ def main():
                 print(f"[{processed+1}/{min(len(files), max_files)}] {rel_path} (est. ${est_cost:.4f}, cumul. ${cumulative_cost:.2f})")
 
                 try:
-                    upsert_single_file(filepath, project_root, index, metadata)
+                    upsert_single_file(filepath, project_root, index, metadata, config=config, graph=graph)
                     processed += 1
                 except Exception as e:
                     print(f"  FAILED: {e}")
@@ -403,6 +436,7 @@ def main():
             print(f"\n\nInterrupted. Saving {processed} files indexed so far...")
 
         save_index(index, metadata, project_root=project_root, index_name=args.index)
+        save_graph(graph, project_root=project_root)
         print(f"\nDone. Processed {processed} files, skipped {skipped}. Est. total cost: ${cumulative_cost:.2f}")
 
 

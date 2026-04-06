@@ -35,7 +35,7 @@ def main():
     parser = argparse.ArgumentParser(description="TurboFind Semantic Search")
     parser.add_argument("query", help="Semantic intent to search for")
     parser.add_argument("--index", default=DEFAULT_INDEX, help=f"Named index to search (default: {DEFAULT_INDEX})")
-    parser.add_argument("--top-k", type=int, default=10, help="Max results to evaluate")
+    parser.add_argument("--top-k", type=int, default=40, help="Max results to evaluate (elbow cutoff trims dynamically)")
     parser.add_argument("--floor", type=float, default=0.55, help="Absolute floor score below which results are discarded")
     parser.add_argument("--visual", action="store_true", help="Show colored score bars (for human use, not agent consumption)")
     parser.add_argument("--json", dest="json_output", action="store_true", help="Output results as JSON (for agent consumption)")

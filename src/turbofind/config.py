@@ -3,6 +3,7 @@
 Priority: CLI flags > .turbofind.toml > hardcoded defaults.
 """
 import os
+import json
 import tomli
 import pathspec
 
@@ -11,6 +12,8 @@ DEFAULT_MAX_FILE_SIZE = 51200   # 50 KB
 DEFAULT_MAX_LINES = 2000
 DEFAULT_MAX_FILES = 100
 DEFAULT_COST_LIMIT = 5.00
+DEFAULT_MAX_DEPTH = 4
+DEFAULT_GRAPH_MAX_TOKENS = 128000
 
 # Files that are git-tracked but should not be indexed
 DEFAULT_EXTRA_EXCLUDES = ["*.lock", "*.min.js", "*.min.css", "*.map"]
@@ -39,6 +42,7 @@ def load_config(project_root):
         "per_file": {
             "max_size_bytes": DEFAULT_MAX_FILE_SIZE,
             "max_lines": DEFAULT_MAX_LINES,
+            "max_depth": DEFAULT_MAX_DEPTH,
         },
         "per_batch": {
             "max_files": DEFAULT_MAX_FILES,
@@ -47,6 +51,9 @@ def load_config(project_root):
         "exclude": {
             "patterns": list(DEFAULT_EXTRA_EXCLUDES),
         },
+        "graph": {
+            "max_tokens": DEFAULT_GRAPH_MAX_TOKENS,
+        }
     }
 
     toml_path = os.path.join(project_root, ".turbofind.toml")
@@ -54,7 +61,7 @@ def load_config(project_root):
         with open(toml_path, "rb") as f:
             user_config = tomli.load(f)
         # Merge user overrides
-        for section in ["per_file", "per_batch", "exclude"]:
+        for section in ["per_file", "per_batch", "exclude", "graph"]:
             if section in user_config:
                 config[section].update(user_config[section])
 
@@ -96,6 +103,22 @@ def check_file_limits(filepath, config):
 CLAUDE_LATENCY_MS = 1500       # avg Claude API round-trip for synthesis
 OLLAMA_EMBED_LATENCY_MS = 150  # avg Ollama embedding call per chunk
 CHUNK_SIZE = 100               # lines per chunk (must match upsert.py)
+
+
+def compute_max_depth(graph, budget, default_depth):
+    """Return the AST max_depth to use for the next file given the current graph size.
+
+    Estimates token count from the serialized graph (rough heuristic: 1 token per 4 chars).
+    Returns default_depth while under budget, 0 once the budget is reached.
+
+    NOTE: In a future TTT-capable model, the depth reduction strategy would be
+    dynamically determined by the model based on its context capacity and the
+    structural importance of each file.
+    """
+    estimated_tokens = len(json.dumps(graph)) // 4
+    if estimated_tokens >= budget:
+        return 0
+    return default_depth
 
 
 def estimate_file(filepath):

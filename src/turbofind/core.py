@@ -18,6 +18,7 @@ TURBOFIND_DIR = ".turbofind"
 INDEXES_DIR = "indexes"
 INDEX_FILENAME = "index.usearch"
 METADATA_FILENAME = "meta.json"
+GRAPH_FILENAME = "graph.json"
 LOCK_FILENAME = "lock"
 DEFAULT_INDEX = "code-intent"
 ROOT_MARKERS = ["repo_map.txt", ".turbofind", ".turbofind.toml", ".git"]
@@ -113,6 +114,27 @@ def save_index(index, metadata, project_root=None, index_name=DEFAULT_INDEX):
     with open(tmp_path, 'w') as f:
         json.dump(metadata, f, indent=2)
     os.replace(tmp_path, meta_path)
+
+def load_graph(project_root=None):
+    """Loads the global AST graph."""
+    root = project_root or find_project_root()
+    d = os.path.join(root, TURBOFIND_DIR)
+    graph_path = os.path.join(d, GRAPH_FILENAME)
+    if os.path.exists(graph_path):
+        with open(graph_path, 'r') as f:
+            return json.load(f)
+    return {}
+
+def save_graph(graph_dict, project_root=None):
+    """Saves the global AST graph atomically."""
+    root = project_root or find_project_root()
+    d = os.path.join(root, TURBOFIND_DIR)
+    os.makedirs(d, exist_ok=True)
+    graph_path = os.path.join(d, GRAPH_FILENAME)
+    tmp_path = graph_path + ".tmp"
+    with open(tmp_path, 'w') as f:
+        json.dump(graph_dict, f, indent=2)
+    os.replace(tmp_path, graph_path)
 
 def embed_text(text, prefix=""):
     """Calls Ollama locally to embed text with nomic-embed-text."""
