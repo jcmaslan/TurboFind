@@ -7,18 +7,24 @@ SENTINEL_END = "<!-- /turbofind -->"
 TURBOFIND_BLOCK = f"""{SENTINEL_START}
 ## TurboFind Migration Protocol
 
-You have access to two semantic search tools. Use them directly in the terminal:
+You have access to semantic search tools. Use them directly in the terminal:
 
 - `tf-search "<query>"` — Semantic vector search across the indexed codebase
-- `tf-upsert <filepath>` — Updates the semantic index after an edit
+- `tf-upsert <filepath>` — Updates the semantic index after an edit or creation
+- `tf-upsert --remove <filepath>` — Removes a deleted file from the index
 
 ### PRE-EDIT RULE (Investigation)
 When investigating the codebase, planning a migration, or locating dependencies:
-Execute `tf-search "<semantic intent>"` FIRST, then proceed with your normal workflow.
+1. Read `.turbofind/graph.json` to understand the structural layout of the codebase (classes, functions, imports, and their relationships).
+2. Execute `tf-search "<semantic intent>"` to find relevant files. The graph context can help you refine your queries with specific class names, function signatures, or import chains when appropriate.
 
 ### POST-EDIT RULE (Synchronization)
 After modifying, refactoring, or creating any file:
 IMMEDIATELY execute `tf-upsert <filepath>` before your next step.
+
+### POST-DELETE RULE (Cleanup)
+After deleting any file:
+IMMEDIATELY execute `tf-upsert --remove <filepath>` before your next step.
 {SENTINEL_END}"""
 
 def install():
@@ -29,7 +35,22 @@ def install():
             existing = f.read()
 
         if SENTINEL_START in existing:
-            print("✅ TurboFind instructions already present in CLAUDE.md — nothing to do.")
+            # Replace existing block with current version
+            start = existing.index(SENTINEL_START)
+            if SENTINEL_END not in existing:
+                print("⚠️  CLAUDE.md has a corrupted TurboFind block (missing end sentinel).")
+                print("   Please fix it manually or delete the line containing '<!-- turbofind -->' and re-run tf-init.")
+                return
+            end = existing.index(SENTINEL_END) + len(SENTINEL_END)
+            if end < len(existing) and existing[end] == "\n":
+                end += 1
+            updated = existing[:start] + TURBOFIND_BLOCK + "\n" + existing[end:]
+            if updated.strip() == existing.strip():
+                print("✅ TurboFind instructions already up to date in CLAUDE.md.")
+                return
+            with open(path, "w") as f:
+                f.write(updated)
+            print("✅ Updated TurboFind instructions in CLAUDE.md.")
             return
 
         with open(path, "a") as f:

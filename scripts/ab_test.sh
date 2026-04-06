@@ -15,8 +15,14 @@ set -euo pipefail
 #
 # Usage:
 #   cd demo_repo && bash ../scripts/ab_test.sh
+#
+# Custom prompt and ground truth:
+#   Create a .ab_test.conf file in your repo with:
+#     PROMPT="your custom prompt here"
+#     GROUND_TRUTH=("path/to/file1.py" "path/to/file2.py")
 # ──────────────────────────────────────────────
 
+# Defaults (tuned for demo_repo)
 PROMPT="List every file in this codebase that contains logic related to user identity, authentication, authorization, session handling, or permission checks. For each file, explain what identity/auth-related logic it contains. Be thorough — include files that may not use obvious keywords like \"auth\" or \"login\" but still participate in identity or access control decisions. Output your findings as a simple list of file paths. Before your final list, briefly describe the investigation steps you took (which tools you called, how many files you read, etc.)."
 
 GROUND_TRUTH=(
@@ -27,7 +33,14 @@ GROUND_TRUTH=(
   "services/analytics/tracker.py"
 )
 
-OUTDIR="../test_results/$(date +%Y%m%d_%H%M%S)"
+# Override defaults with user config if present
+if [ -f .ab_test.conf ]; then
+  # shellcheck source=/dev/null
+  source .ab_test.conf
+  echo "Loaded custom config from .ab_test.conf"
+fi
+
+OUTDIR="../test_results/ab_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$OUTDIR"
 
 echo "═══════════════════════════════════════════"
