@@ -85,17 +85,12 @@ def _get_call_name(node, source_bytes):
     if func_node.type in ("identifier", "name"):
         return func_node.text.decode("utf-8", errors="replace")
 
-    # For attribute access like obj.method(), extract "method"
+    # For attribute access like obj.method(), extract the rightmost identifier
     if func_node.type in ("attribute", "member_expression", "field_access"):
-        for child in func_node.children:
-            if child.type in ("identifier", "name", "property_identifier"):
-                # Return the last identifier (the method name)
-                pass
-        # Get the rightmost identifier
         parts = func_node.text.decode("utf-8", errors="replace").split(".")
         return parts[-1] if parts else None
 
-    return func_node.text.decode("utf-8", errors="replace") if func_node.type == "identifier" else None
+    return None
 
 
 def _walk_for_types(node, target_types):
@@ -222,14 +217,15 @@ def build_topology(all_definitions, all_calls):
         callee_name = call["callee_name"]
         targets = name_to_ids.get(callee_name, [])
         if len(targets) == 1:
-            # Unambiguous match — find the caller definition
+            # Unambiguous match — find the enclosing definition (closest line before the call)
             caller_file = call["caller_file"]
-            caller_defs = [d["id"] for d in all_definitions if d["file"] == caller_file and d["type"] == "def"]
-            # Find the most likely enclosing definition (closest line before the call)
-            caller_id = None
-            for d in all_definitions:
-                if d["file"] == caller_file and d["type"] in ("def", "class") and d["line"] <= call["line"]:
-                    caller_id = d["id"]
+            caller_candidates = [
+                d for d in all_definitions
+                if d["file"] == caller_file
+                and d["type"] in ("def", "class")
+                and d["line"] <= call["line"]
+            ]
+            caller_id = max(caller_candidates, key=lambda d: d["line"])["id"] if caller_candidates else None
             if caller_id and caller_id != targets[0]:
                 G.add_edge(caller_id, targets[0])
 

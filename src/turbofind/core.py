@@ -55,8 +55,8 @@ def check_ollama():
 
 def _index_dir(project_root, index_name):
     """Return the directory path for a named index, creating it if needed."""
-    if not re.match(r'^[A-Za-z0-9_.\-]+$', index_name):
-        raise ValueError(f"Invalid index name '{index_name}': must contain only letters, digits, underscores, dots, or hyphens")
+    if not re.match(r'^[A-Za-z0-9_.\-]+$', index_name) or index_name in (".", ".."):
+        raise ValueError(f"Invalid index name '{index_name}': must contain only letters, digits, underscores, dots, or hyphens (and not '.' or '..')")
     d = os.path.join(project_root, TURBOFIND_DIR, INDEXES_DIR, index_name)
     os.makedirs(d, exist_ok=True)
     return d

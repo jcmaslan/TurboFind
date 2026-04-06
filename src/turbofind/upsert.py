@@ -1,7 +1,6 @@
 import os
 import sys
 import uuid
-import json
 import re
 import time
 import argparse
@@ -121,7 +120,7 @@ def upsert_single_file(filepath, project_root, index, metadata, graph_xml=None):
     with open(filepath, 'r') as f:
         content = f.read()
 
-    content_hash = file_sha1(filepath)
+    content_hash = text_sha1(content)
 
     print(f"  Synthesizing with Claude...")
     synthesis, usage = synthesize_with_claude(rel_path, content, project_root, graph_xml)
@@ -253,7 +252,11 @@ def main():
             graph = load_graph(project_root=project_root)
             total_removed = 0
             for filepath in args.remove_paths:
-                rel_path = os.path.relpath(os.path.abspath(filepath), project_root)
+                try:
+                    rel_path = os.path.relpath(os.path.abspath(filepath), project_root)
+                except ValueError:
+                    print(f"Skipping path on a different drive: {filepath}")
+                    continue
                 count = nuke_file(rel_path, index, metadata)
                 # Remove nodes/edges for this file from topology
                 removed_ids = {n["id"] for n in graph.get("nodes", []) if n.get("file") == rel_path}
@@ -396,6 +399,7 @@ def main():
     print("Building topology graph...")
     all_defs = []
     all_calls = []
+    successfully_extracted = set()
     for filepath in files[:max_files]:
         rel_path = os.path.relpath(filepath, project_root)
         try:
@@ -403,13 +407,13 @@ def main():
                 content = f.read()
             all_defs.extend(extract_definitions(rel_path, content))
             all_calls.extend(extract_calls(rel_path, content))
-        except Exception:
-            pass  # Skip files that can't be read; they'll be handled in Phase 2
+            successfully_extracted.add(rel_path)
+        except Exception as e:
+            print(f"  Skipped topology for {rel_path}: {e}")
 
-    # Load existing graph and merge — preserve nodes for files not being re-indexed
+    # Load existing graph and merge — only replace files whose extraction succeeded
     graph = load_graph(project_root=project_root)
-    upserted_files = {os.path.relpath(f, project_root) for f in files[:max_files]}
-    existing_nodes = [n for n in graph.get("nodes", []) if n["file"] not in upserted_files]
+    existing_nodes = [n for n in graph.get("nodes", []) if n["file"] not in successfully_extracted]
     existing_defs = [{"id": n["id"], "file": n["file"], "type": n["type"], "line": n["line"]}
                      for n in existing_nodes]
 

@@ -32,7 +32,7 @@ The AST can expand rapidly in memory. To prevent overflowing prompt-cached limit
 ### Tooling: `tf-verify`
 We introduced the `tf-verify` CLI specifically designed for the frontier model to introspect data schemas:
 - **Usage**: `tf-verify check-node <filepath> -n <node_id_or_path>`
-- **Current behavior**: A simple placeholder that dumps the stored AST JSON for a file. The `--node` flag is accepted but not yet functional beyond displaying the full file AST. This stub will be replaced once the verification API protocol is decided.
+- **Current behavior**: Displays topology nodes (definitions) and their edges for a given file. When `--node` is provided, filters results by substring match against definition IDs. This is a lightweight prototype that will be replaced once the verification API protocol is decided.
 - **Future Expansions**: This tool will eventually expand beyond strict syntax checking to validate abstract design patterns and cross-service relationships (like PubSub triggers or Redis coupling) allowing the model to perform high-resolution "pre-flight checks" prior to issuing edit prompts.
 
 ### Application Lifecycle (Prototype Phase)

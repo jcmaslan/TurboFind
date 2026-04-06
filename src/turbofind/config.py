@@ -3,7 +3,6 @@
 Priority: CLI flags > .turbofind.toml > hardcoded defaults.
 """
 import os
-import json
 import tomli
 import pathspec
 
