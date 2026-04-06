@@ -1,6 +1,5 @@
 import os
 import argparse
-from .core import TURBOFIND_DIR, GRAPH_FILENAME
 
 SENTINEL_START = "<!-- turbofind -->"
 SENTINEL_END = "<!-- /turbofind -->"
@@ -91,12 +90,6 @@ def remove():
     with open(path, "w") as f:
         f.write(cleaned + "\n" if cleaned else "")
     print("✅ Removed TurboFind instructions from CLAUDE.md.")
-
-    # Clean up the cached AST graph
-    graph_path = os.path.join(TURBOFIND_DIR, GRAPH_FILENAME)
-    if os.path.exists(graph_path):
-        os.remove(graph_path)
-        print("✅ Removed cached AST graph.")
 
 def main():
     parser = argparse.ArgumentParser(description="Initialize or remove TurboFind from CLAUDE.md")
