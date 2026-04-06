@@ -116,17 +116,17 @@ def save_index(index, metadata, project_root=None, index_name=DEFAULT_INDEX):
     os.replace(tmp_path, meta_path)
 
 def load_graph(project_root=None):
-    """Loads the global AST graph."""
+    """Loads the global topology graph as {"nodes": [...], "edges": [...]}."""
     root = project_root or find_project_root()
     d = os.path.join(root, TURBOFIND_DIR)
     graph_path = os.path.join(d, GRAPH_FILENAME)
     if os.path.exists(graph_path):
         with open(graph_path, 'r') as f:
             return json.load(f)
-    return {}
+    return {"nodes": [], "edges": []}
 
 def save_graph(graph_dict, project_root=None):
-    """Saves the global AST graph atomically."""
+    """Saves the global topology graph atomically."""
     root = project_root or find_project_root()
     d = os.path.join(root, TURBOFIND_DIR)
     os.makedirs(d, exist_ok=True)
@@ -135,6 +135,22 @@ def save_graph(graph_dict, project_root=None):
     with open(tmp_path, 'w') as f:
         json.dump(graph_dict, f, indent=2)
     os.replace(tmp_path, graph_path)
+
+def graph_to_xml(graph_dict):
+    """Serialize a topology graph dict to compact XML for prompt injection."""
+    from xml.sax.saxutils import quoteattr
+    lines = ["<repository_topology>"]
+    for node in graph_dict.get("nodes", []):
+        lines.append(
+            f"  <node id={quoteattr(node['id'])} file={quoteattr(node['file'])} "
+            f"type={quoteattr(node['type'])} line={quoteattr(str(node['line']))} />"
+        )
+    for edge in graph_dict.get("edges", []):
+        lines.append(
+            f"  <edge from={quoteattr(edge['from'])} to={quoteattr(edge['to'])} />"
+        )
+    lines.append("</repository_topology>")
+    return "\n".join(lines)
 
 def embed_text(text, prefix=""):
     """Calls Ollama locally to embed text with nomic-embed-text."""

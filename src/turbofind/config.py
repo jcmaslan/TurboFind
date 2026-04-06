@@ -105,20 +105,17 @@ OLLAMA_EMBED_LATENCY_MS = 150  # avg Ollama embedding call per chunk
 CHUNK_SIZE = 100               # lines per chunk (must match upsert.py)
 
 
-def compute_max_depth(graph, budget, default_depth):
-    """Return the AST max_depth to use for the next file given the current graph size.
+def check_graph_budget(graph_xml, budget):
+    """Return True if the graph XML is within the token budget.
 
-    Estimates token count from the serialized graph (rough heuristic: 1 token per 4 chars).
-    Returns default_depth while under budget, 0 once the budget is reached.
+    Estimates token count from the XML string (rough heuristic: 1 token per 4 chars).
 
-    NOTE: In a future TTT-capable model, the depth reduction strategy would be
+    NOTE: In a future TTT-capable model, the budget strategy would be
     dynamically determined by the model based on its context capacity and the
     structural importance of each file.
     """
-    estimated_tokens = len(json.dumps(graph)) // 4
-    if estimated_tokens >= budget:
-        return 0
-    return default_depth
+    estimated_tokens = len(graph_xml) // 4
+    return estimated_tokens < budget
 
 
 def estimate_file(filepath):
@@ -138,3 +135,22 @@ def estimate_file(filepath):
     time_ms = CLAUDE_LATENCY_MS + (num_chunks * OLLAMA_EMBED_LATENCY_MS)
 
     return cost, time_ms
+
+
+def compute_actual_cost(usage):
+    """Compute actual cost from an Anthropic API usage object.
+    Accounts for prompt caching pricing (cache reads are 90% cheaper)."""
+    input_tokens = getattr(usage, "input_tokens", 0)
+    output_tokens = getattr(usage, "output_tokens", 0)
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_create = getattr(usage, "cache_creation_input_tokens", 0) or 0
+
+    # Non-cached input tokens = total input - cache_read
+    regular_input = max(0, input_tokens - cache_read)
+
+    input_cost = (regular_input / 1_000_000) * TOKEN_COSTS["input_per_m"]
+    cache_read_cost = (cache_read / 1_000_000) * TOKEN_COSTS["input_per_m"] * 0.1  # 90% discount
+    cache_create_cost = (cache_create / 1_000_000) * TOKEN_COSTS["input_per_m"] * 1.25  # 25% surcharge
+    output_cost = (output_tokens / 1_000_000) * TOKEN_COSTS["output_per_m"]
+
+    return input_cost + cache_read_cost + cache_create_cost + output_cost

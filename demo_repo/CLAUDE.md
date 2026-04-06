@@ -1,3 +1,4 @@
+
 <!-- turbofind -->
 ## TurboFind Migration Protocol
 
@@ -9,7 +10,8 @@ You have access to semantic search tools. Use them directly in the terminal:
 
 ### PRE-EDIT RULE (Investigation)
 When investigating the codebase, planning a migration, or locating dependencies:
-Execute `tf-search "<semantic intent>"` FIRST, then proceed with your normal workflow.
+1. Read `.turbofind/graph.json` to understand the structural layout of the codebase (classes, functions, imports, and their relationships).
+2. Execute `tf-search "<semantic intent>"` to find relevant files. The graph context can help you refine your queries with specific class names, function signatures, or import chains when appropriate.
 
 ### POST-EDIT RULE (Synchronization)
 After modifying, refactoring, or creating any file:

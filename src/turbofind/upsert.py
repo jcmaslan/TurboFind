@@ -3,15 +3,16 @@ import sys
 import uuid
 import json
 import re
+import time
 import argparse
 import glob as globlib
-from anthropic import Anthropic
+from anthropic import Anthropic, RateLimitError
 from .core import (check_ollama, load_index, save_index, embed_text,
                    find_project_root, index_lock, file_sha1, text_sha1,
-                   load_graph, save_graph, DEFAULT_INDEX)
+                   load_graph, save_graph, graph_to_xml, DEFAULT_INDEX)
 from .prompts import SYSTEM_PROMPT
-from .ast_utils import extract_ast
-from .config import load_config, load_exclusion_spec, check_file_limits, estimate_file, compute_max_depth, SOURCE_EXTENSIONS
+from .ast_utils import extract_definitions, extract_calls, build_topology
+from .config import load_config, load_exclusion_spec, check_file_limits, estimate_file, check_graph_budget, compute_actual_cost, SOURCE_EXTENSIONS
 import numpy as np
 
 CHUNK_SIZE = 100
@@ -31,7 +32,7 @@ def nuke_file(filepath, index, metadata):
         del metadata[vid]
     return len(ids_to_remove)
 
-def synthesize_with_claude(filepath, content, project_root, graph=None):
+def synthesize_with_claude(filepath, content, project_root, graph_xml=None):
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set.")
@@ -50,11 +51,10 @@ def synthesize_with_claude(filepath, content, project_root, graph=None):
         }
     ]
 
-    if graph:
-        graph_text = json.dumps(graph, indent=2)
+    if graph_xml:
         system_message.append({
             "type": "text",
-            "text": f"<global_ast_graph>\n{graph_text}\n</global_ast_graph>",
+            "text": f"<global_ast_graph>\n{graph_xml}\n</global_ast_graph>",
             "cache_control": {"type": "ephemeral"}
         })
     else:
@@ -62,19 +62,32 @@ def synthesize_with_claude(filepath, content, project_root, graph=None):
         system_message[-1]["cache_control"] = {"type": "ephemeral"}
 
     model = os.environ.get("TURBOFIND_MODEL", DEFAULT_MODEL)
-    response = client.messages.create(
-        model=model,
-        max_tokens=1000,
-        temperature=0.2,
-        system=system_message,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Analyze this file ({filepath}):\n\n{content}"
-            }
-        ]
-    )
-    return response.content[0].text
+
+    # Retry with exponential backoff on rate limit errors
+    max_retries = 3
+    backoff = 30
+    for attempt in range(max_retries):
+        try:
+            response = client.messages.create(
+                model=model,
+                max_tokens=1000,
+                temperature=0.2,
+                system=system_message,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"Analyze this file ({filepath}):\n\n{content}"
+                    }
+                ]
+            )
+            return response.content[0].text, response.usage
+        except RateLimitError as e:
+            if attempt < max_retries - 1:
+                wait = backoff * (2 ** attempt)
+                print(f"  Rate limited, retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
 
 def extract_xml_tag(xml_str, tag):
     match = re.search(f"<{tag}>(.*?)</{tag}>", xml_str, re.DOTALL)
@@ -97,7 +110,7 @@ def get_unique_id():
     return uuid.uuid4().int >> 64
 
 
-def upsert_single_file(filepath, project_root, index, metadata, config=None, graph=None):
+def upsert_single_file(filepath, project_root, index, metadata, graph_xml=None):
     """Process a single file through the full Nuke-Synthesize-Chunk-Embed-Pave pipeline."""
     rel_path = os.path.relpath(filepath, project_root)
 
@@ -110,25 +123,13 @@ def upsert_single_file(filepath, project_root, index, metadata, config=None, gra
 
     content_hash = file_sha1(filepath)
 
-    if graph is not None and config is not None:
-        budget = config.get("graph", {}).get("max_tokens", 128000)
-        default_depth = config.get("per_file", {}).get("max_depth", 4)
-        max_depth = compute_max_depth(graph, budget, default_depth)
-        if max_depth > 0:
-            print(f"  Extracting AST...")
-            ast_dict = extract_ast(filepath, content, max_depth)
-            if ast_dict:
-                graph[rel_path] = ast_dict
-                print(f"  AST extracted successfully")
-        else:
-            print(f"  Skipping AST extraction (graph token budget reached)")
-
     print(f"  Synthesizing with Claude...")
-    synthesis = synthesize_with_claude(rel_path, content, project_root, graph)
+    synthesis, usage = synthesize_with_claude(rel_path, content, project_root, graph_xml)
 
+    actual_cost = compute_actual_cost(usage)
     severity = extract_xml_tag(synthesis, "legacy_coupling_severity")
     core_intent = extract_xml_tag(synthesis, "core_intent")
-    print(f"  Synthesis complete (severity: {severity}/10)")
+    print(f"  Synthesis complete (severity: {severity}/10, actual: ${actual_cost:.4f})")
 
     chunks = chunk_file(rel_path, content)
 
@@ -148,7 +149,7 @@ def upsert_single_file(filepath, project_root, index, metadata, config=None, gra
         }
 
     print(f"  Embedded {len(chunks)} chunks")
-    return len(chunks)
+    return len(chunks), actual_cost
 
 
 def upsert_text_input(text, index, metadata, kind="insight", summary=None, referenced_files=None):
@@ -254,8 +255,11 @@ def main():
             for filepath in args.remove_paths:
                 rel_path = os.path.relpath(os.path.abspath(filepath), project_root)
                 count = nuke_file(rel_path, index, metadata)
-                if rel_path in graph:
-                    del graph[rel_path]
+                # Remove nodes/edges for this file from topology
+                removed_ids = {n["id"] for n in graph.get("nodes", []) if n.get("file") == rel_path}
+                graph["nodes"] = [n for n in graph.get("nodes", []) if n.get("file") != rel_path]
+                graph["edges"] = [e for e in graph.get("edges", [])
+                                  if e["from"] not in removed_ids and e["to"] not in removed_ids]
                 if count > 0:
                     print(f"Removed {count} vectors for {rel_path}")
                     total_removed += count
@@ -280,8 +284,11 @@ def main():
             total_removed = 0
             for fpath in sorted(stale_files):
                 count = nuke_file(fpath, index, metadata)
-                if fpath in graph:
-                    del graph[fpath]
+                # Remove nodes/edges for this file from topology
+                removed_ids = {n["id"] for n in graph.get("nodes", []) if n.get("file") == fpath}
+                graph["nodes"] = [n for n in graph.get("nodes", []) if n.get("file") != fpath]
+                graph["edges"] = [e for e in graph.get("edges", [])
+                                  if e["from"] not in removed_ids and e["to"] not in removed_ids]
                 print(f"Pruned {count} vectors for {fpath} (file no longer exists)")
                 total_removed += count
             if total_removed > 0:
@@ -385,13 +392,48 @@ def main():
         print(e)
         sys.exit(1)
 
+    # ── Phase 1: Build complete topology graph (fast, no API calls) ──
+    print("Building topology graph...")
+    all_defs = []
+    all_calls = []
+    for filepath in files[:max_files]:
+        rel_path = os.path.relpath(filepath, project_root)
+        try:
+            with open(filepath, 'r') as f:
+                content = f.read()
+            all_defs.extend(extract_definitions(rel_path, content))
+            all_calls.extend(extract_calls(rel_path, content))
+        except Exception:
+            pass  # Skip files that can't be read; they'll be handled in Phase 2
+
+    # Load existing graph and merge — preserve nodes for files not being re-indexed
+    graph = load_graph(project_root=project_root)
+    upserted_files = {os.path.relpath(f, project_root) for f in files[:max_files]}
+    existing_nodes = [n for n in graph.get("nodes", []) if n["file"] not in upserted_files]
+    existing_defs = [{"id": n["id"], "file": n["file"], "type": n["type"], "line": n["line"]}
+                     for n in existing_nodes]
+
+    combined_defs = existing_defs + all_defs
+    topo = build_topology(combined_defs, all_calls)
+    graph["nodes"] = [{"id": n, **topo.nodes[n]} for n in topo.nodes]
+    graph["edges"] = [{"from": u, "to": v} for u, v in topo.edges]
+
+    graph_xml = graph_to_xml(graph)
+    budget = config.get("graph", {}).get("max_tokens", 128000)
+    if not check_graph_budget(graph_xml, budget):
+        print(f"Graph exceeds token budget ({len(graph_xml)//4} est. tokens), skipping topology injection")
+        graph_xml = None
+    else:
+        print(f"Topology: {len(graph['nodes'])} definitions, {len(graph['edges'])} edges (~{len(graph_xml)//4} tokens)")
+
+    # ── Phase 2: Synthesize + embed (API calls) ──
     with index_lock(project_root):
         index, metadata = load_index(project_root=project_root, index_name=args.index)
-        graph = load_graph(project_root=project_root)
 
         processed = 0
         skipped = 0
-        cumulative_cost = 0.0
+        estimated_cost = 0.0
+        actual_cost = 0.0
         confirmed_over_limit = False
 
         try:
@@ -410,12 +452,12 @@ def main():
                     skipped += 1
                     continue
 
-                # Cost check
+                # Cost check (uses estimate for pre-confirmation)
                 est_cost, _ = estimate_file(filepath)
-                cumulative_cost += est_cost
+                estimated_cost += est_cost
 
-                if cumulative_cost > cost_limit and not confirmed_over_limit:
-                    print(f"\nWARNING: Estimated cumulative cost: ${cumulative_cost:.2f} (limit: ${cost_limit:.2f})")
+                if estimated_cost > cost_limit and not confirmed_over_limit:
+                    print(f"\nWARNING: Estimated cumulative cost: ${estimated_cost:.2f} (limit: ${cost_limit:.2f})")
                     response = input("Continue? [y/N] ").strip().lower()
                     if response != "y":
                         print("Stopped.")
@@ -423,10 +465,11 @@ def main():
                         sys.exit(0)
                     confirmed_over_limit = True
 
-                print(f"[{processed+1}/{min(len(files), max_files)}] {rel_path} (est. ${est_cost:.4f}, cumul. ${cumulative_cost:.2f})")
+                print(f"[{processed+1}/{min(len(files), max_files)}] {rel_path}")
 
                 try:
-                    upsert_single_file(filepath, project_root, index, metadata, config=config, graph=graph)
+                    _, file_cost = upsert_single_file(filepath, project_root, index, metadata, graph_xml=graph_xml)
+                    actual_cost += file_cost
                     processed += 1
                 except Exception as e:
                     print(f"  FAILED: {e}")
@@ -437,7 +480,7 @@ def main():
 
         save_index(index, metadata, project_root=project_root, index_name=args.index)
         save_graph(graph, project_root=project_root)
-        print(f"\nDone. Processed {processed} files, skipped {skipped}. Est. total cost: ${cumulative_cost:.2f}")
+        print(f"\nDone. Processed {processed} files, skipped {skipped}. Actual cost: ${actual_cost:.4f}")
 
 
 if __name__ == "__main__":
