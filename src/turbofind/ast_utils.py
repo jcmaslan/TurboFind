@@ -415,7 +415,7 @@ def build_topology(all_definitions, all_calls, all_imports=None):
             ]
             caller_id = max(caller_candidates, key=lambda d: d["line"])["id"] if caller_candidates else None
             if caller_id and caller_id != targets[0]:
-                G.add_edge(caller_id, targets[0], type="calls")
+                G.add_edge(caller_id, targets[0], key="calls", type="calls")
 
     # Import edge resolution: match imported names to known definitions
     for imp in all_imports:
@@ -427,7 +427,7 @@ def build_topology(all_definitions, all_calls, all_imports=None):
             if importer_defs:
                 importer_id = min(importer_defs, key=lambda d: d["line"])["id"]
                 if importer_id != targets[0]:
-                    G.add_edge(importer_id, targets[0], type="imports")
+                    G.add_edge(importer_id, targets[0], key="imports", type="imports")
 
     # Inheritance edge resolution: match extends fields to class definitions
     for defn in all_definitions:
@@ -436,6 +436,6 @@ def build_topology(all_definitions, all_calls, all_imports=None):
             continue
         targets = class_name_to_ids.get(base_name, [])
         if len(targets) == 1 and defn["id"] != targets[0]:
-            G.add_edge(defn["id"], targets[0], type="extends")
+            G.add_edge(defn["id"], targets[0], key="extends", type="extends")
 
     return G

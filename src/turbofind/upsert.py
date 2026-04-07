@@ -390,14 +390,15 @@ def main():
             combined_defs = existing_defs + all_defs
             topo = build_topology(combined_defs, all_calls, all_imps)
             final_node_ids = set(topo.nodes)
+            reextracted_node_ids = {d["id"] for d in all_defs}
             new_edges = [{"from": u, "to": v, "type": d.get("type", "calls")}
                          for u, v, d in topo.edges(data=True)]
-            # Preserve old edges not rebuilt by topo, if both endpoints still exist
-            new_edge_set = {(e["from"], e["to"], e["type"]) for e in new_edges}
+            # Preserve old edges only from non-re-extracted source nodes,
+            # if both endpoints still exist, to avoid retaining stale edges
             preserved_edges = [e for e in graph.get("edges", [])
                                if e["from"] in final_node_ids
                                and e["to"] in final_node_ids
-                               and (e["from"], e["to"], e.get("type", "calls")) not in new_edge_set]
+                               and e["from"] not in reextracted_node_ids]
             graph["nodes"] = [{"id": n, **topo.nodes[n]} for n in topo.nodes]
             graph["edges"] = new_edges + preserved_edges
 
@@ -492,12 +493,13 @@ def main():
     final_node_ids = set(topo.nodes)
     new_edges = [{"from": u, "to": v, "type": d.get("type", "calls")}
                  for u, v, d in topo.edges(data=True)]
-    # Preserve old edges not rebuilt by topo, if both endpoints still exist
-    new_edge_set = {(e["from"], e["to"], e["type"]) for e in new_edges}
+    # Preserve old edges only from non-re-extracted source nodes,
+    # if both endpoints still exist, to avoid retaining stale edges
+    reextracted_node_ids = {d["id"] for d in all_defs}
     preserved_edges = [e for e in graph.get("edges", [])
                        if e["from"] in final_node_ids
                        and e["to"] in final_node_ids
-                       and (e["from"], e["to"], e.get("type", "calls")) not in new_edge_set]
+                       and e["from"] not in reextracted_node_ids]
     graph["nodes"] = [{"id": n, **topo.nodes[n]} for n in topo.nodes]
     graph["edges"] = new_edges + preserved_edges
 
