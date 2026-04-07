@@ -241,6 +241,8 @@ def main():
                         help="Remove a deleted file from the index (repeatable)")
     parser.add_argument("--prune", action="store_true",
                         help="Remove all index entries whose source files no longer exist on disk")
+    parser.add_argument("--graph-only", action="store_true",
+                        help="Build topology graph (graph.json) only — no synthesis, no embedding, no API calls")
     parser.add_argument("--dry-run", action="store_true", help="Preview what would be indexed without calling any APIs")
     args = parser.parse_args()
 
@@ -334,6 +336,52 @@ def main():
             save_index(index, metadata, project_root=project_root, index_name=args.index)
 
         print(f"Indexed 1 entry into '{args.index}' (kind: {args.kind})")
+        return
+
+    # ── Graph-only mode ──
+    if args.graph_only:
+        if not args.paths:
+            parser.error("paths are required when using --graph-only")
+
+        first_path = os.path.abspath(args.paths[0])
+        start_dir = os.path.dirname(first_path) if os.path.isfile(first_path) else first_path
+        project_root = find_project_root(start_dir)
+
+        config = load_config(project_root)
+        exclusion_spec = load_exclusion_spec(project_root, config["exclude"]["patterns"])
+        files = resolve_paths(args.paths, project_root, exclusion_spec)
+
+        if not files:
+            print("No files matched after applying exclusions.")
+            sys.exit(0)
+
+        print("Building topology graph...")
+        all_defs = []
+        all_calls = []
+        successfully_extracted = set()
+        for filepath in files:
+            rel_path = os.path.relpath(filepath, project_root)
+            try:
+                with open(filepath, 'r') as f:
+                    content = f.read()
+                all_defs.extend(extract_definitions(rel_path, content))
+                all_calls.extend(extract_calls(rel_path, content))
+                successfully_extracted.add(rel_path)
+            except Exception as e:
+                print(f"  Skipped topology for {rel_path}: {e}")
+
+        graph = load_graph(project_root=project_root)
+        existing_nodes = [n for n in graph.get("nodes", []) if n["file"] not in successfully_extracted]
+        existing_defs = [{"id": n["id"], "file": n["file"], "type": n["type"], "line": n["line"]}
+                         for n in existing_nodes]
+
+        combined_defs = existing_defs + all_defs
+        topo = build_topology(combined_defs, all_calls)
+        graph["nodes"] = [{"id": n, **topo.nodes[n]} for n in topo.nodes]
+        graph["edges"] = [{"from": u, "to": v} for u, v in topo.edges]
+
+        save_graph(graph, project_root=project_root)
+        print(f"Done. {len(graph['nodes'])} definitions, {len(graph['edges'])} edges saved to .turbofind/graph.json")
         return
 
     # ── Source file mode (original behavior) ──

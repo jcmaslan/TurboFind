@@ -11,6 +11,7 @@ set -euo pipefail
 #   - claude CLI installed and authenticated
 #   - TurboFind installed (pip install -e .)
 #   - Index already built (tf-upsert .)
+#   - Topology graph exists (.turbofind/graph.json)
 #   - Run from inside demo_repo/
 #
 # Usage:
@@ -42,6 +43,13 @@ fi
 
 OUTDIR="../test_results/ab_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$OUTDIR"
+
+# ── Pre-flight checks ──
+if [ ! -f .turbofind/graph.json ]; then
+  echo "ERROR: .turbofind/graph.json not found."
+  echo "Run 'tf-upsert . --graph-only' to build the topology graph (fast, no API calls)."
+  exit 1
+fi
 
 echo "═══════════════════════════════════════════"
 echo "  TurboFind A/B Test"
