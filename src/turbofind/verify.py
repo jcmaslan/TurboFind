@@ -14,34 +14,31 @@ import os
 import networkx as nx
 from .core import find_project_root, load_graph, load_graph_as_nx
 
+# Edge types that represent call/import relationships (excludes "extends")
+_CALL_IMPORT_TYPES = {"calls", "imports"}
+
 
 def _resolve_node(G, pattern):
     """Resolve a node pattern (substring match) to matching node IDs."""
     return [n for n in G.nodes if pattern in n]
 
 
-def _resolve_file_nodes(G, filepath):
-    """Get all nodes belonging to a file."""
-    return [n for n, data in G.nodes(data=True) if data.get("file") == filepath]
+def _normalize_filepath(filepath, project_root):
+    """Normalize a filepath to a repo-relative path matching graph node format."""
+    return os.path.normpath(os.path.relpath(os.path.abspath(filepath), project_root))
 
 
-def _output(result, as_json):
-    """Print result as JSON or human-readable text."""
-    if as_json:
-        print(json.dumps(result, indent=2))
-    elif isinstance(result, bool):
-        print("true" if result else "false")
-    elif isinstance(result, list):
-        for item in result:
-            print(f"  {item}")
-    elif isinstance(result, dict):
-        for k, v in result.items():
-            if isinstance(v, list):
-                print(f"{k}:")
-                for item in v:
-                    print(f"  {item}")
-            else:
-                print(f"{k}: {v}")
+def _resolve_file_nodes(G, filepath, project_root):
+    """Get all nodes belonging to a file, normalizing the path first."""
+    normalized = _normalize_filepath(filepath, project_root)
+    return [n for n, data in G.nodes(data=True) if data.get("file") == normalized]
+
+
+def _get_edge_types(G, u, v):
+    """Get all edge types between u and v in a MultiDiGraph."""
+    if not G.has_edge(u, v):
+        return []
+    return [d.get("type", "calls") for _, d in G[u][v].items()]
 
 
 def cmd_check_node(args):
@@ -120,10 +117,18 @@ def cmd_query(args):
         found = []
         for s in sources:
             for t in targets:
-                if G.has_edge(s, t):
-                    found.append({"from": s, "to": t, "type": G.edges[s, t].get("type", "calls")})
-        result = {"match": len(found) > 0, "edges": found}
-        _output(result, as_json)
+                for edge_type in _get_edge_types(G, s, t):
+                    if edge_type in _CALL_IMPORT_TYPES:
+                        found.append({"from": s, "to": t, "type": edge_type})
+        if as_json:
+            print(json.dumps({"match": len(found) > 0, "edges": found}, indent=2))
+        else:
+            if not found:
+                print("No matching call/import edges found.")
+            else:
+                print(f"Match ({len(found)} edges):")
+                for e in found:
+                    print(f"  {e['from']} --[{e['type']}]--> {e['to']}")
 
     elif predicate == "callers-of":
         if len(pred_args) != 1:
@@ -133,8 +138,9 @@ def cmd_query(args):
         callers = set()
         for n in nodes:
             for pred in G.predecessors(n):
-                edge_type = G.edges[pred, n].get("type", "calls")
-                callers.add((pred, edge_type))
+                for edge_type in _get_edge_types(G, pred, n):
+                    if edge_type in _CALL_IMPORT_TYPES:
+                        callers.add((pred, edge_type))
         result = [{"node": c, "type": t} for c, t in sorted(callers)]
         if as_json:
             print(json.dumps(result, indent=2))
@@ -149,7 +155,8 @@ def cmd_query(args):
         if len(pred_args) != 1:
             print("Usage: tf-verify query deps-of <filepath>")
             sys.exit(1)
-        file_nodes = _resolve_file_nodes(G, pred_args[0])
+        file_nodes = _resolve_file_nodes(G, pred_args[0], project_root)
+        normalized = _normalize_filepath(pred_args[0], project_root)
         if not file_nodes:
             print(f"No nodes found for file: {pred_args[0]}")
             sys.exit(1)
@@ -157,7 +164,7 @@ def cmd_query(args):
         for n in file_nodes:
             for succ in G.successors(n):
                 dep_file = G.nodes[succ].get("file")
-                if dep_file and dep_file != pred_args[0]:
+                if dep_file and dep_file != normalized:
                     dep_files.add(dep_file)
         result = sorted(dep_files)
         if as_json:
@@ -173,7 +180,8 @@ def cmd_query(args):
         if len(pred_args) != 1:
             print("Usage: tf-verify query dependents-of <filepath>")
             sys.exit(1)
-        file_nodes = _resolve_file_nodes(G, pred_args[0])
+        file_nodes = _resolve_file_nodes(G, pred_args[0], project_root)
+        normalized = _normalize_filepath(pred_args[0], project_root)
         if not file_nodes:
             print(f"No nodes found for file: {pred_args[0]}")
             sys.exit(1)
@@ -181,7 +189,7 @@ def cmd_query(args):
         for n in file_nodes:
             for pred in G.predecessors(n):
                 dep_file = G.nodes[pred].get("file")
-                if dep_file and dep_file != pred_args[0]:
+                if dep_file and dep_file != normalized:
                     dep_files.add(dep_file)
         result = sorted(dep_files)
         if as_json:
@@ -238,7 +246,6 @@ def cmd_query(args):
         if not targets:
             print(f"No nodes matching: {pred_args[1]}")
             sys.exit(1)
-        # Find shortest path between any source and any target
         shortest = None
         for s in sources:
             for t in targets:
@@ -258,9 +265,8 @@ def cmd_query(args):
                     prefix = "  " if i == 0 else "  -> "
                     print(f"{prefix}{node}")
         else:
-            result = {"path": None, "length": -1}
             if as_json:
-                print(json.dumps(result, indent=2))
+                print(json.dumps({"path": None, "length": -1}, indent=2))
             else:
                 print("No path found.")
 
@@ -286,8 +292,9 @@ def cmd_assert(args):
         targets = _resolve_node(G, pred_args[1])
         for s in sources:
             for t in targets:
-                if G.has_edge(s, t):
-                    sys.exit(0)
+                for edge_type in _get_edge_types(G, s, t):
+                    if edge_type in _CALL_IMPORT_TYPES:
+                        sys.exit(0)
         sys.exit(1)
 
     elif predicate == "callers-of":
@@ -295,26 +302,34 @@ def cmd_assert(args):
             sys.exit(2)
         nodes = _resolve_node(G, pred_args[0])
         for n in nodes:
-            if list(G.predecessors(n)):
-                sys.exit(0)
+            for pred in G.predecessors(n):
+                for edge_type in _get_edge_types(G, pred, n):
+                    if edge_type in _CALL_IMPORT_TYPES:
+                        sys.exit(0)
         sys.exit(1)
 
     elif predicate == "deps-of":
         if len(pred_args) != 1:
             sys.exit(2)
-        file_nodes = _resolve_file_nodes(G, pred_args[0])
+        file_nodes = _resolve_file_nodes(G, pred_args[0], project_root)
+        normalized = _normalize_filepath(pred_args[0], project_root)
         for n in file_nodes:
-            if list(G.successors(n)):
-                sys.exit(0)
+            for succ in G.successors(n):
+                dep_file = G.nodes[succ].get("file")
+                if dep_file and dep_file != normalized:
+                    sys.exit(0)
         sys.exit(1)
 
     elif predicate == "dependents-of":
         if len(pred_args) != 1:
             sys.exit(2)
-        file_nodes = _resolve_file_nodes(G, pred_args[0])
+        file_nodes = _resolve_file_nodes(G, pred_args[0], project_root)
+        normalized = _normalize_filepath(pred_args[0], project_root)
         for n in file_nodes:
-            if list(G.predecessors(n)):
-                sys.exit(0)
+            for pred in G.predecessors(n):
+                dep_file = G.nodes[pred].get("file")
+                if dep_file and dep_file != normalized:
+                    sys.exit(0)
         sys.exit(1)
 
     elif predicate == "impact":

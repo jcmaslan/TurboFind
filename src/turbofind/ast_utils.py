@@ -198,22 +198,6 @@ def extract_definitions(filepath, content):
     return definitions
 
 
-def _resolve_python_relative_import(importer_file, module_text, dots):
-    """Resolve a Python relative import to a file path.
-
-    Given importer_file='services/billing/handlers/checkout.py', module_text='models.invoice', dots=2,
-    returns 'services/billing/models/invoice.py'.
-    """
-    # Go up `dots` directory levels from the importer's directory
-    base = os.path.dirname(importer_file)
-    for _ in range(dots - 1):
-        base = os.path.dirname(base)
-    if module_text:
-        parts = module_text.split(".")
-        return os.path.join(base, *parts[:-1], parts[-1] + ".py") if parts else base
-    return base
-
-
 def extract_imports(filepath, content):
     """Extract import relationships from a source file.
 
@@ -348,15 +332,16 @@ def extract_calls(filepath, content):
 
 
 def build_topology(all_definitions, all_calls, all_imports=None):
-    """Build a NetworkX DiGraph from extracted definitions, calls, and imports.
+    """Build a NetworkX MultiDiGraph from extracted definitions, calls, and imports.
 
     Edges are typed: "calls", "imports", or "extends".
-    Edges are added on a best-effort basis by matching names to known definition IDs.
+    MultiDiGraph allows multiple edge types between the same (u, v) pair
+    (e.g., a caller that both imports and calls the same target).
     """
     if all_imports is None:
         all_imports = []
 
-    G = nx.DiGraph()
+    G = nx.MultiDiGraph()
 
     # Index definitions by their short name for call-site/import matching
     name_to_ids = {}

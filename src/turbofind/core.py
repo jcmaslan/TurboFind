@@ -156,10 +156,10 @@ def graph_to_xml(graph_dict):
 
 
 def load_graph_as_nx(project_root=None):
-    """Load graph.json and reconstruct a NetworkX DiGraph for querying."""
+    """Load graph.json and reconstruct a NetworkX MultiDiGraph for querying."""
     import networkx as nx
     graph_dict = load_graph(project_root)
-    G = nx.DiGraph()
+    G = nx.MultiDiGraph()
     for node in graph_dict.get("nodes", []):
         G.add_node(node["id"], file=node["file"], type=node["type"], line=node["line"])
     for edge in graph_dict.get("edges", []):

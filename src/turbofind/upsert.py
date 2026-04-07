@@ -372,18 +372,19 @@ def main():
             except Exception as e:
                 print(f"  Skipped topology for {rel_path}: {e}")
 
-        graph = load_graph(project_root=project_root)
-        existing_nodes = [n for n in graph.get("nodes", []) if n["file"] not in successfully_extracted]
-        existing_defs = [{"id": n["id"], "file": n["file"], "type": n["type"], "line": n["line"]}
-                         for n in existing_nodes]
+        with index_lock(project_root):
+            graph = load_graph(project_root=project_root)
+            existing_nodes = [n for n in graph.get("nodes", []) if n["file"] not in successfully_extracted]
+            existing_defs = [{"id": n["id"], "file": n["file"], "type": n["type"], "line": n["line"]}
+                             for n in existing_nodes]
 
-        combined_defs = existing_defs + all_defs
-        topo = build_topology(combined_defs, all_calls, all_imps)
-        graph["nodes"] = [{"id": n, **topo.nodes[n]} for n in topo.nodes]
-        graph["edges"] = [{"from": u, "to": v, "type": topo.edges[u, v].get("type", "calls")}
-                          for u, v in topo.edges]
+            combined_defs = existing_defs + all_defs
+            topo = build_topology(combined_defs, all_calls, all_imps)
+            graph["nodes"] = [{"id": n, **topo.nodes[n]} for n in topo.nodes]
+            graph["edges"] = [{"from": u, "to": v, "type": d.get("type", "calls")}
+                              for u, v, d in topo.edges(data=True)]
 
-        save_graph(graph, project_root=project_root)
+            save_graph(graph, project_root=project_root)
         print(f"Done. {len(graph['nodes'])} definitions, {len(graph['edges'])} edges saved to .turbofind/graph.json")
         return
 
