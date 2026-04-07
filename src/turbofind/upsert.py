@@ -246,6 +246,16 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Preview what would be indexed without calling any APIs")
     args = parser.parse_args()
 
+    # Validate mutually exclusive modes
+    mode_flags = sum([
+        bool(args.remove_paths),
+        bool(args.prune),
+        args.text_input is not None,
+        args.graph_only,
+    ])
+    if mode_flags > 1:
+        parser.error("--remove, --prune, --input, and --graph-only are mutually exclusive")
+
     # ── Remove mode ──
     if args.remove_paths:
         project_root = find_project_root()
