@@ -25,7 +25,11 @@ def _resolve_node(G, pattern):
 
 def _normalize_filepath(filepath, project_root):
     """Normalize a filepath to a repo-relative path matching graph node format."""
-    return os.path.normpath(os.path.relpath(os.path.abspath(filepath), project_root))
+    try:
+        return os.path.normpath(os.path.relpath(os.path.abspath(filepath), project_root))
+    except ValueError:
+        print(f"Error: {filepath} is not within the project root {project_root}")
+        sys.exit(1)
 
 
 def _resolve_file_nodes(G, filepath, project_root):
