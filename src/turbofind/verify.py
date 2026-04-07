@@ -290,6 +290,8 @@ def cmd_assert(args):
             sys.exit(2)
         sources = _resolve_node(G, pred_args[0])
         targets = _resolve_node(G, pred_args[1])
+        if not sources or not targets:
+            sys.exit(2)
         for s in sources:
             for t in targets:
                 for edge_type in _get_edge_types(G, s, t):
@@ -301,6 +303,8 @@ def cmd_assert(args):
         if len(pred_args) != 1:
             sys.exit(2)
         nodes = _resolve_node(G, pred_args[0])
+        if not nodes:
+            sys.exit(2)
         for n in nodes:
             for pred in G.predecessors(n):
                 for edge_type in _get_edge_types(G, pred, n):
@@ -312,6 +316,8 @@ def cmd_assert(args):
         if len(pred_args) != 1:
             sys.exit(2)
         file_nodes = _resolve_file_nodes(G, pred_args[0], project_root)
+        if not file_nodes:
+            sys.exit(2)
         normalized = _normalize_filepath(pred_args[0], project_root)
         for n in file_nodes:
             for succ in G.successors(n):
@@ -324,6 +330,8 @@ def cmd_assert(args):
         if len(pred_args) != 1:
             sys.exit(2)
         file_nodes = _resolve_file_nodes(G, pred_args[0], project_root)
+        if not file_nodes:
+            sys.exit(2)
         normalized = _normalize_filepath(pred_args[0], project_root)
         for n in file_nodes:
             for pred in G.predecessors(n):
@@ -336,6 +344,8 @@ def cmd_assert(args):
         if len(pred_args) != 1:
             sys.exit(2)
         nodes = _resolve_node(G, pred_args[0])
+        if not nodes:
+            sys.exit(2)
         R = G.reverse()
         for n in nodes:
             if nx.descendants(R, n):
@@ -347,6 +357,8 @@ def cmd_assert(args):
             sys.exit(2)
         sources = _resolve_node(G, pred_args[0])
         targets = _resolve_node(G, pred_args[1])
+        if not sources or not targets:
+            sys.exit(2)
         for s in sources:
             for t in targets:
                 if nx.has_path(G, s, t):

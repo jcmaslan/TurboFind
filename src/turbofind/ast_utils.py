@@ -113,31 +113,46 @@ def _get_enclosing_class(node):
     return None
 
 
+def _extract_base_name(arg):
+    """Extract the class name from a base class AST node.
+
+    Handles both bare identifiers (Bar) and qualified names (models.Bar)
+    by returning the rightmost identifier component.
+    """
+    if arg.type in ("identifier", "name", "type_identifier"):
+        return arg.text.decode("utf-8", errors="replace")
+    if arg.type in ("attribute", "member_expression", "field_access", "scoped_type_identifier"):
+        # Qualified name like models.Base — take the rightmost component
+        parts = arg.text.decode("utf-8", errors="replace").split(".")
+        return parts[-1] if parts else None
+    return None
+
+
 def _get_base_class(node, language):
     """Extract the base class name from a class definition node, if any."""
     if language == "python":
-        # Python: class Foo(Bar): — base class is in argument_list child
         for child in node.children:
             if child.type == "argument_list":
                 for arg in child.children:
-                    if arg.type == "identifier":
-                        return arg.text.decode("utf-8", errors="replace")
+                    name = _extract_base_name(arg)
+                    if name:
+                        return name
                 break
     elif language in ("javascript", "typescript"):
-        # JS/TS: class Foo extends Bar { — base class is in class_heritage child
         for child in node.children:
             if child.type == "class_heritage":
                 for arg in child.children:
-                    if arg.type == "identifier":
-                        return arg.text.decode("utf-8", errors="replace")
+                    name = _extract_base_name(arg)
+                    if name:
+                        return name
                 break
     elif language == "java":
-        # Java: class Foo extends Bar { — superclass child
         for child in node.children:
             if child.type == "superclass":
                 for arg in child.children:
-                    if arg.type == "identifier" or arg.type == "type_identifier":
-                        return arg.text.decode("utf-8", errors="replace")
+                    name = _extract_base_name(arg)
+                    if name:
+                        return name
                 break
     return None
 
@@ -376,9 +391,8 @@ def build_topology(all_definitions, all_calls, all_imports=None):
         imported_name = imp["imported_name"]
         targets = name_to_ids.get(imported_name, [])
         if len(targets) == 1:
-            # Create a file-level import edge from the importing file's first definition
-            importer_defs = [d for d in all_definitions
-                            if d["file"] == imp["importer_file"] and d["type"] in ("def", "class")]
+            # Anchor import edge to the earliest node in the importing file (any type)
+            importer_defs = [d for d in all_definitions if d["file"] == imp["importer_file"]]
             if importer_defs:
                 importer_id = min(importer_defs, key=lambda d: d["line"])["id"]
                 if importer_id != targets[0]:

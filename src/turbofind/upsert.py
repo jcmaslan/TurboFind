@@ -377,12 +377,17 @@ def main():
             existing_nodes = [n for n in graph.get("nodes", []) if n["file"] not in successfully_extracted]
             existing_defs = [{"id": n["id"], "file": n["file"], "type": n["type"], "line": n["line"]}
                              for n in existing_nodes]
+            # Preserve edges where both endpoints belong to non-replaced files
+            existing_node_ids = {n["id"] for n in existing_nodes}
+            preserved_edges = [e for e in graph.get("edges", [])
+                               if e["from"] in existing_node_ids and e["to"] in existing_node_ids]
 
             combined_defs = existing_defs + all_defs
             topo = build_topology(combined_defs, all_calls, all_imps)
+            new_edges = [{"from": u, "to": v, "type": d.get("type", "calls")}
+                         for u, v, d in topo.edges(data=True)]
             graph["nodes"] = [{"id": n, **topo.nodes[n]} for n in topo.nodes]
-            graph["edges"] = [{"from": u, "to": v, "type": d.get("type", "calls")}
-                              for u, v, d in topo.edges(data=True)]
+            graph["edges"] = new_edges + preserved_edges
 
             save_graph(graph, project_root=project_root)
         print(f"Done. {len(graph['nodes'])} definitions, {len(graph['edges'])} edges saved to .turbofind/graph.json")
@@ -470,12 +475,17 @@ def main():
     existing_nodes = [n for n in graph.get("nodes", []) if n["file"] not in successfully_extracted]
     existing_defs = [{"id": n["id"], "file": n["file"], "type": n["type"], "line": n["line"]}
                      for n in existing_nodes]
+    # Preserve edges where both endpoints belong to non-replaced files
+    existing_node_ids = {n["id"] for n in existing_nodes}
+    preserved_edges = [e for e in graph.get("edges", [])
+                       if e["from"] in existing_node_ids and e["to"] in existing_node_ids]
 
     combined_defs = existing_defs + all_defs
     topo = build_topology(combined_defs, all_calls, all_imps)
+    new_edges = [{"from": u, "to": v, "type": d.get("type", "calls")}
+                 for u, v, d in topo.edges(data=True)]
     graph["nodes"] = [{"id": n, **topo.nodes[n]} for n in topo.nodes]
-    graph["edges"] = [{"from": u, "to": v, "type": d.get("type", "calls")}
-                      for u, v, d in topo.edges(data=True)]
+    graph["edges"] = new_edges + preserved_edges
 
     graph_xml = graph_to_xml(graph)
     budget = config.get("graph", {}).get("max_tokens", 128000)
