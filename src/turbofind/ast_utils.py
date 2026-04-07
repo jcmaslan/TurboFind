@@ -234,8 +234,8 @@ def extract_imports(filepath, content):
     imports = []
 
     if language == "python":
+        # Handle "from X import Y" and "from X import Y as Z"
         for node in _walk_for_types(tree.root_node, {"import_from_statement"}):
-            # Extract module path and dot count for relative imports
             module_text = ""
             dots = 0
             imported_names = []
@@ -248,11 +248,16 @@ def extract_imports(filepath, content):
                         elif sub.type == "dotted_name":
                             module_text = sub.text.decode("utf-8", errors="replace")
                 elif child.type == "dotted_name":
-                    # Could be the module (before 'import') or an imported name (after 'import')
                     if not module_text and dots == 0:
                         module_text = child.text.decode("utf-8", errors="replace")
                     else:
                         imported_names.append(child.text.decode("utf-8", errors="replace"))
+                elif child.type == "aliased_import":
+                    # "from X import Y as Z" — extract the original name (Y)
+                    for sub in child.children:
+                        if sub.type == "dotted_name":
+                            imported_names.append(sub.text.decode("utf-8", errors="replace"))
+                            break
 
             for name in imported_names:
                 from_module = ("." * dots + module_text) if dots else module_text
@@ -262,6 +267,32 @@ def extract_imports(filepath, content):
                     "from_module": from_module,
                     "line": node.start_point[0] + 1,
                 })
+
+        # Handle plain "import X" and "import X.Y"
+        for node in _walk_for_types(tree.root_node, {"import_statement"}):
+            for child in node.children:
+                if child.type == "dotted_name":
+                    full_name = child.text.decode("utf-8", errors="replace")
+                    # Use the last component as the imported name (e.g., "path" from "os.path")
+                    name = full_name.rsplit(".", 1)[-1]
+                    imports.append({
+                        "importer_file": filepath,
+                        "imported_name": name,
+                        "from_module": full_name,
+                        "line": node.start_point[0] + 1,
+                    })
+                elif child.type == "aliased_import":
+                    for sub in child.children:
+                        if sub.type == "dotted_name":
+                            full_name = sub.text.decode("utf-8", errors="replace")
+                            name = full_name.rsplit(".", 1)[-1]
+                            imports.append({
+                                "importer_file": filepath,
+                                "imported_name": name,
+                                "from_module": full_name,
+                                "line": node.start_point[0] + 1,
+                            })
+                            break
 
     elif language in ("javascript", "typescript"):
         for node in _walk_for_types(tree.root_node, {"import_statement"}):
