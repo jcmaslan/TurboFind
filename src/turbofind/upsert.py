@@ -255,6 +255,8 @@ def main():
     ])
     if mode_flags > 1:
         parser.error("--remove, --prune, --input, and --graph-only are mutually exclusive")
+    if args.dry_run and (args.graph_only or args.text_input is not None):
+        parser.error("--dry-run cannot be used with --graph-only or --input")
 
     # ── Remove mode ──
     if args.remove_paths:

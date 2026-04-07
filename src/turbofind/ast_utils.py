@@ -210,6 +210,17 @@ def extract_definitions(filepath, content):
 
         definitions.append(entry)
 
+    # Ensure every file has at least one node to anchor import edges.
+    # Files with only imports (e.g., __init__.py, re-export modules) would
+    # otherwise have no nodes since _get_node_name returns None for import nodes.
+    if not definitions:
+        definitions.append({
+            "id": f"{filepath}::__module__",
+            "file": filepath,
+            "type": "module",
+            "line": 1,
+        })
+
     return definitions
 
 
