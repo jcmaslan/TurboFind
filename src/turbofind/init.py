@@ -87,9 +87,13 @@ def remove():
     cleaned = content[:start] + content[end:]
     cleaned = cleaned.strip()
 
-    with open(path, "w") as f:
-        f.write(cleaned + "\n" if cleaned else "")
-    print("✅ Removed TurboFind instructions from CLAUDE.md.")
+    if cleaned:
+        with open(path, "w") as f:
+            f.write(cleaned + "\n")
+        print("✅ Removed TurboFind instructions from CLAUDE.md.")
+    else:
+        os.remove(path)
+        print("✅ Removed CLAUDE.md (no other content remained).")
 
 def main():
     parser = argparse.ArgumentParser(description="Initialize or remove TurboFind from CLAUDE.md")

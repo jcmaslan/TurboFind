@@ -10,7 +10,7 @@ from .core import (check_ollama, load_index, save_index, embed_text,
                    find_project_root, index_lock, file_sha1, text_sha1,
                    load_graph, save_graph, graph_to_xml, DEFAULT_INDEX)
 from .prompts import SYSTEM_PROMPT
-from .ast_utils import extract_definitions, extract_calls, build_topology
+from .ast_utils import extract_definitions, extract_calls, extract_imports, build_topology
 from .config import load_config, load_exclusion_spec, check_file_limits, estimate_file, check_graph_budget, compute_actual_cost, SOURCE_EXTENSIONS
 import numpy as np
 
@@ -241,8 +241,22 @@ def main():
                         help="Remove a deleted file from the index (repeatable)")
     parser.add_argument("--prune", action="store_true",
                         help="Remove all index entries whose source files no longer exist on disk")
+    parser.add_argument("--graph-only", action="store_true",
+                        help="Build topology graph (graph.json) only — no synthesis, no embedding, no API calls")
     parser.add_argument("--dry-run", action="store_true", help="Preview what would be indexed without calling any APIs")
     args = parser.parse_args()
+
+    # Validate mutually exclusive modes
+    mode_flags = sum([
+        bool(args.remove_paths),
+        bool(args.prune),
+        args.text_input is not None,
+        args.graph_only,
+    ])
+    if mode_flags > 1:
+        parser.error("--remove, --prune, --input, and --graph-only are mutually exclusive")
+    if args.dry_run and (args.graph_only or args.text_input is not None):
+        parser.error("--dry-run cannot be used with --graph-only or --input")
 
     # ── Remove mode ──
     if args.remove_paths:
@@ -336,6 +350,64 @@ def main():
         print(f"Indexed 1 entry into '{args.index}' (kind: {args.kind})")
         return
 
+    # ── Graph-only mode ──
+    if args.graph_only:
+        if not args.paths:
+            parser.error("paths are required when using --graph-only")
+
+        first_path = os.path.abspath(args.paths[0])
+        start_dir = os.path.dirname(first_path) if os.path.isfile(first_path) else first_path
+        project_root = find_project_root(start_dir)
+
+        config = load_config(project_root)
+        exclusion_spec = load_exclusion_spec(project_root, config["exclude"]["patterns"])
+        files = resolve_paths(args.paths, project_root, exclusion_spec)
+
+        if not files:
+            print("No files matched after applying exclusions.")
+            sys.exit(0)
+
+        print("Building topology graph...")
+        all_defs = []
+        all_calls = []
+        all_imps = []
+        successfully_extracted = set()
+        for filepath in files:
+            rel_path = os.path.relpath(filepath, project_root)
+            try:
+                with open(filepath, 'r') as f:
+                    content = f.read()
+                all_defs.extend(extract_definitions(rel_path, content))
+                all_calls.extend(extract_calls(rel_path, content))
+                all_imps.extend(extract_imports(rel_path, content))
+                successfully_extracted.add(rel_path)
+            except Exception as e:
+                print(f"  Skipped topology for {rel_path}: {e}")
+
+        with index_lock(project_root):
+            graph = load_graph(project_root=project_root)
+            existing_nodes = [n for n in graph.get("nodes", []) if n["file"] not in successfully_extracted]
+            existing_defs = [{"id": n["id"], "file": n["file"], "type": n["type"], "line": n["line"]}
+                             for n in existing_nodes]
+            combined_defs = existing_defs + all_defs
+            topo = build_topology(combined_defs, all_calls, all_imps)
+            final_node_ids = set(topo.nodes)
+            reextracted_node_ids = {d["id"] for d in all_defs}
+            new_edges = [{"from": u, "to": v, "type": d.get("type", "calls")}
+                         for u, v, d in topo.edges(data=True)]
+            # Preserve old edges only from non-re-extracted source nodes,
+            # if both endpoints still exist, to avoid retaining stale edges
+            preserved_edges = [e for e in graph.get("edges", [])
+                               if e["from"] in final_node_ids
+                               and e["to"] in final_node_ids
+                               and e["from"] not in reextracted_node_ids]
+            graph["nodes"] = [{"id": n, **topo.nodes[n]} for n in topo.nodes]
+            graph["edges"] = new_edges + preserved_edges
+
+            save_graph(graph, project_root=project_root)
+        print(f"Done. {len(graph['nodes'])} definitions, {len(graph['edges'])} edges saved to .turbofind/graph.json")
+        return
+
     # ── Source file mode (original behavior) ──
     if not args.paths:
         parser.error("paths are required when not using --input")
@@ -399,6 +471,7 @@ def main():
     print("Building topology graph...")
     all_defs = []
     all_calls = []
+    all_imps = []
     successfully_extracted = set()
     for filepath in files[:max_files]:
         rel_path = os.path.relpath(filepath, project_root)
@@ -407,6 +480,7 @@ def main():
                 content = f.read()
             all_defs.extend(extract_definitions(rel_path, content))
             all_calls.extend(extract_calls(rel_path, content))
+            all_imps.extend(extract_imports(rel_path, content))
             successfully_extracted.add(rel_path)
         except Exception as e:
             print(f"  Skipped topology for {rel_path}: {e}")
@@ -416,11 +490,20 @@ def main():
     existing_nodes = [n for n in graph.get("nodes", []) if n["file"] not in successfully_extracted]
     existing_defs = [{"id": n["id"], "file": n["file"], "type": n["type"], "line": n["line"]}
                      for n in existing_nodes]
-
     combined_defs = existing_defs + all_defs
-    topo = build_topology(combined_defs, all_calls)
+    topo = build_topology(combined_defs, all_calls, all_imps)
+    final_node_ids = set(topo.nodes)
+    new_edges = [{"from": u, "to": v, "type": d.get("type", "calls")}
+                 for u, v, d in topo.edges(data=True)]
+    # Preserve old edges only from non-re-extracted source nodes,
+    # if both endpoints still exist, to avoid retaining stale edges
+    reextracted_node_ids = {d["id"] for d in all_defs}
+    preserved_edges = [e for e in graph.get("edges", [])
+                       if e["from"] in final_node_ids
+                       and e["to"] in final_node_ids
+                       and e["from"] not in reextracted_node_ids]
     graph["nodes"] = [{"id": n, **topo.nodes[n]} for n in topo.nodes]
-    graph["edges"] = [{"from": u, "to": v} for u, v in topo.edges]
+    graph["edges"] = new_edges + preserved_edges
 
     graph_xml = graph_to_xml(graph)
     budget = config.get("graph", {}).get("max_tokens", 128000)

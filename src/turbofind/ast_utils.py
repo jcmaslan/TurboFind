@@ -38,12 +38,13 @@ _LANGUAGE_MODULES = {
     "typescript": tree_sitter_typescript,
 }
 
-# Tree-sitter node types for extracting definitions
+# Tree-sitter node types for extracting definitions.
+# Import nodes are handled separately by extract_imports().
 _DEFINITION_TYPES = {
-    "python": {"function_definition", "class_definition", "import_from_statement"},
-    "java": {"method_declaration", "class_declaration", "import_declaration"},
-    "javascript": {"function_declaration", "class_declaration", "import_statement", "export_statement"},
-    "typescript": {"function_declaration", "class_declaration", "import_statement", "export_statement"},
+    "python": {"function_definition", "class_definition"},
+    "java": {"method_declaration", "class_declaration"},
+    "javascript": {"function_declaration", "class_declaration", "export_statement"},
+    "typescript": {"function_declaration", "class_declaration", "export_statement"},
 }
 
 # Tree-sitter node types for extracting call sites
@@ -113,10 +114,55 @@ def _get_enclosing_class(node):
     return None
 
 
-def extract_definitions(filepath, content):
-    """Extract top-level definitions (classes, functions, imports) from a source file.
+def _extract_base_name(arg):
+    """Extract the class name from a base class AST node.
 
-    Returns a list of dicts: [{"id": "Class.method", "file": path, "type": "def"|"class"|"import", "line": n}]
+    Handles both bare identifiers (Bar) and qualified names (models.Bar)
+    by returning the rightmost identifier component.
+    """
+    if arg.type in ("identifier", "name", "type_identifier"):
+        return arg.text.decode("utf-8", errors="replace")
+    if arg.type in ("attribute", "member_expression", "field_access", "scoped_type_identifier"):
+        # Qualified name like models.Base — take the rightmost component
+        parts = arg.text.decode("utf-8", errors="replace").split(".")
+        return parts[-1] if parts else None
+    return None
+
+
+def _get_base_class(node, language):
+    """Extract the base class name from a class definition node, if any."""
+    if language == "python":
+        for child in node.children:
+            if child.type == "argument_list":
+                for arg in child.children:
+                    name = _extract_base_name(arg)
+                    if name:
+                        return name
+                break
+    elif language in ("javascript", "typescript"):
+        for child in node.children:
+            if child.type == "class_heritage":
+                for arg in child.children:
+                    name = _extract_base_name(arg)
+                    if name:
+                        return name
+                break
+    elif language == "java":
+        for child in node.children:
+            if child.type == "superclass":
+                for arg in child.children:
+                    name = _extract_base_name(arg)
+                    if name:
+                        return name
+                break
+    return None
+
+
+def extract_definitions(filepath, content):
+    """Extract top-level definitions (classes, functions) from a source file.
+
+    Returns a list of dicts with keys: id, file, type, line, and optionally extends (for classes).
+    Import extraction is handled separately by extract_imports().
     """
     ext = os.path.splitext(filepath)[1]
     language = EXTENSION_TO_LANGUAGE.get(ext)
@@ -141,8 +187,6 @@ def extract_definitions(filepath, content):
         # Determine type
         if "class" in node.type:
             node_type = "class"
-        elif "import" in node.type:
-            node_type = "import"
         else:
             node_type = "def"
 
@@ -151,14 +195,163 @@ def extract_definitions(filepath, content):
         local_name = f"{enclosing}.{name}" if enclosing and node_type == "def" else name
         qualified = f"{filepath}::{local_name}"
 
-        definitions.append({
+        entry = {
             "id": qualified,
             "file": filepath,
             "type": node_type,
             "line": node.start_point[0] + 1,
+        }
+
+        # Extract base class for inheritance edges
+        if node_type == "class":
+            base = _get_base_class(node, language)
+            if base:
+                entry["extends"] = base
+
+        definitions.append(entry)
+
+    # Ensure every file has at least one node to anchor import edges.
+    # Files with only imports (e.g., __init__.py, re-export modules) would
+    # otherwise have no nodes since _get_node_name returns None for import nodes.
+    if not definitions:
+        definitions.append({
+            "id": f"{filepath}::__module__",
+            "file": filepath,
+            "type": "module",
+            "line": 1,
         })
 
     return definitions
+
+
+def extract_imports(filepath, content):
+    """Extract import relationships from a source file.
+
+    Returns a list of dicts:
+    [{"importer_file": str, "imported_name": str, "from_module": str, "line": int}]
+    """
+    ext = os.path.splitext(filepath)[1]
+    language = EXTENSION_TO_LANGUAGE.get(ext)
+    if not language:
+        return []
+
+    parser = get_parser(language)
+    if not parser:
+        return []
+
+    source_bytes = content.encode("utf-8")
+    tree = parser.parse(source_bytes)
+
+    imports = []
+
+    if language == "python":
+        # Handle "from X import Y" and "from X import Y as Z"
+        for node in _walk_for_types(tree.root_node, {"import_from_statement"}):
+            module_text = ""
+            dots = 0
+            imported_names = []
+
+            for child in node.children:
+                if child.type == "relative_import":
+                    for sub in child.children:
+                        if sub.type == "import_prefix":
+                            dots = sub.text.count(b".")
+                        elif sub.type == "dotted_name":
+                            module_text = sub.text.decode("utf-8", errors="replace")
+                elif child.type == "dotted_name":
+                    if not module_text and dots == 0:
+                        module_text = child.text.decode("utf-8", errors="replace")
+                    else:
+                        imported_names.append(child.text.decode("utf-8", errors="replace"))
+                elif child.type == "aliased_import":
+                    # "from X import Y as Z" — extract the original name (Y)
+                    for sub in child.children:
+                        if sub.type == "dotted_name":
+                            imported_names.append(sub.text.decode("utf-8", errors="replace"))
+                            break
+
+            for name in imported_names:
+                from_module = ("." * dots + module_text) if dots else module_text
+                imports.append({
+                    "importer_file": filepath,
+                    "imported_name": name,
+                    "from_module": from_module,
+                    "line": node.start_point[0] + 1,
+                })
+
+        # Handle plain "import X" and "import X.Y"
+        for node in _walk_for_types(tree.root_node, {"import_statement"}):
+            for child in node.children:
+                if child.type == "dotted_name":
+                    full_name = child.text.decode("utf-8", errors="replace")
+                    # Use the last component as the imported name (e.g., "path" from "os.path")
+                    name = full_name.rsplit(".", 1)[-1]
+                    imports.append({
+                        "importer_file": filepath,
+                        "imported_name": name,
+                        "from_module": full_name,
+                        "line": node.start_point[0] + 1,
+                    })
+                elif child.type == "aliased_import":
+                    for sub in child.children:
+                        if sub.type == "dotted_name":
+                            full_name = sub.text.decode("utf-8", errors="replace")
+                            name = full_name.rsplit(".", 1)[-1]
+                            imports.append({
+                                "importer_file": filepath,
+                                "imported_name": name,
+                                "from_module": full_name,
+                                "line": node.start_point[0] + 1,
+                            })
+                            break
+
+    elif language in ("javascript", "typescript"):
+        for node in _walk_for_types(tree.root_node, {"import_statement"}):
+            source_str = ""
+            imported_names = []
+
+            for child in node.children:
+                if child.type == "string":
+                    # Extract the string content (without quotes)
+                    for sub in child.children:
+                        if sub.type == "string_fragment":
+                            source_str = sub.text.decode("utf-8", errors="replace")
+                elif child.type == "import_clause":
+                    for sub in child.children:
+                        if sub.type == "identifier":
+                            imported_names.append(sub.text.decode("utf-8", errors="replace"))
+                        elif sub.type == "named_imports":
+                            for spec in sub.children:
+                                if spec.type == "import_specifier":
+                                    for ident in spec.children:
+                                        if ident.type == "identifier":
+                                            imported_names.append(ident.text.decode("utf-8", errors="replace"))
+                                            break
+
+            for name in imported_names:
+                imports.append({
+                    "importer_file": filepath,
+                    "imported_name": name,
+                    "from_module": source_str,
+                    "line": node.start_point[0] + 1,
+                })
+
+    elif language == "java":
+        for node in _walk_for_types(tree.root_node, {"import_declaration"}):
+            for child in node.children:
+                if child.type in ("scoped_identifier", "identifier"):
+                    full_path = child.text.decode("utf-8", errors="replace")
+                    # Last component is the imported class/name
+                    parts = full_path.rsplit(".", 1)
+                    name = parts[-1] if len(parts) > 1 else full_path
+                    imports.append({
+                        "importer_file": filepath,
+                        "imported_name": name,
+                        "from_module": full_path,
+                        "line": node.start_point[0] + 1,
+                    })
+
+    return imports
 
 
 def extract_calls(filepath, content):
@@ -195,29 +388,35 @@ def extract_calls(filepath, content):
     return calls
 
 
-def build_topology(all_definitions, all_calls):
-    """Build a NetworkX DiGraph from extracted definitions and calls.
+def build_topology(all_definitions, all_calls, all_imports=None):
+    """Build a NetworkX MultiDiGraph from extracted definitions, calls, and imports.
 
-    Edges are added on a best-effort basis by matching call-site names
-    to known definition IDs.
+    Edges are typed: "calls", "imports", or "extends".
+    MultiDiGraph allows multiple edge types between the same (u, v) pair
+    (e.g., a caller that both imports and calls the same target).
     """
-    G = nx.DiGraph()
+    if all_imports is None:
+        all_imports = []
 
-    # Index definitions by their short name for call-site matching
+    G = nx.MultiDiGraph()
+
+    # Index definitions by their short name for call-site/import matching
     name_to_ids = {}
+    class_name_to_ids = {}
     for defn in all_definitions:
         G.add_node(defn["id"], file=defn["file"], type=defn["type"], line=defn["line"])
         # Extract local name after "::" then get the short name (last component)
         local_name = defn["id"].split("::")[-1] if "::" in defn["id"] else defn["id"]
         short_name = local_name.split(".")[-1]
         name_to_ids.setdefault(short_name, []).append(defn["id"])
+        if defn["type"] == "class":
+            class_name_to_ids.setdefault(short_name, []).append(defn["id"])
 
-    # Best-effort edge resolution
+    # Best-effort call edge resolution
     for call in all_calls:
         callee_name = call["callee_name"]
         targets = name_to_ids.get(callee_name, [])
         if len(targets) == 1:
-            # Unambiguous match — find the enclosing definition (closest line before the call)
             caller_file = call["caller_file"]
             caller_candidates = [
                 d for d in all_definitions
@@ -227,6 +426,27 @@ def build_topology(all_definitions, all_calls):
             ]
             caller_id = max(caller_candidates, key=lambda d: d["line"])["id"] if caller_candidates else None
             if caller_id and caller_id != targets[0]:
-                G.add_edge(caller_id, targets[0])
+                G.add_edge(caller_id, targets[0], key="calls", type="calls")
+
+    # Import edge resolution: match imported names to known definitions
+    for imp in all_imports:
+        imported_name = imp["imported_name"]
+        targets = name_to_ids.get(imported_name, [])
+        if len(targets) == 1:
+            # Anchor import edge to the earliest node in the importing file (any type)
+            importer_defs = [d for d in all_definitions if d["file"] == imp["importer_file"]]
+            if importer_defs:
+                importer_id = min(importer_defs, key=lambda d: d["line"])["id"]
+                if importer_id != targets[0]:
+                    G.add_edge(importer_id, targets[0], key="imports", type="imports")
+
+    # Inheritance edge resolution: match extends fields to class definitions
+    for defn in all_definitions:
+        base_name = defn.get("extends")
+        if not base_name:
+            continue
+        targets = class_name_to_ids.get(base_name, [])
+        if len(targets) == 1 and defn["id"] != targets[0]:
+            G.add_edge(defn["id"], targets[0], key="extends", type="extends")
 
     return G

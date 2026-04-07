@@ -146,11 +146,25 @@ def graph_to_xml(graph_dict):
             f"type={quoteattr(node['type'])} line={quoteattr(str(node['line']))} />"
         )
     for edge in graph_dict.get("edges", []):
+        edge_type = edge.get("type", "calls")
         lines.append(
-            f"  <edge from={quoteattr(edge['from'])} to={quoteattr(edge['to'])} />"
+            f"  <edge from={quoteattr(edge['from'])} to={quoteattr(edge['to'])} "
+            f"type={quoteattr(edge_type)} />"
         )
     lines.append("</repository_topology>")
     return "\n".join(lines)
+
+
+def load_graph_as_nx(project_root=None):
+    """Load graph.json and reconstruct a NetworkX MultiDiGraph for querying."""
+    import networkx as nx
+    graph_dict = load_graph(project_root)
+    G = nx.MultiDiGraph()
+    for node in graph_dict.get("nodes", []):
+        G.add_node(node["id"], file=node["file"], type=node["type"], line=node["line"])
+    for edge in graph_dict.get("edges", []):
+        G.add_edge(edge["from"], edge["to"], type=edge.get("type", "calls"))
+    return G
 
 def embed_text(text, prefix=""):
     """Calls Ollama locally to embed text with nomic-embed-text."""
