@@ -30,12 +30,14 @@ def _resolve_node(G, pattern):
 
 
 def _normalize_filepath(filepath, project_root):
-    """Normalize a filepath to a repo-relative path matching graph node format."""
+    """Normalize a filepath to a repo-relative path matching graph node format.
+
+    Raises ValueError if the path is not within the project root (e.g., cross-drive on Windows).
+    """
     try:
         return os.path.normpath(os.path.relpath(os.path.abspath(filepath), project_root))
     except ValueError:
-        print(f"Error: {filepath} is not within the project root {project_root}")
-        sys.exit(1)
+        raise ValueError(f"{filepath} is not within the project root {project_root}")
 
 
 def _resolve_file_nodes(G, filepath, project_root):
@@ -110,6 +112,23 @@ def cmd_check_node(args):
         print("\nNo cross-file edges detected.")
 
 
+def _handle_path_error(func):
+    """Decorator that catches ValueError from path normalization and exits appropriately."""
+    import functools
+    @functools.wraps(func)
+    def wrapper(args):
+        try:
+            return func(args)
+        except ValueError as e:
+            if func.__name__ == "cmd_assert":
+                _assert_error(f"Error: {e}")
+            else:
+                print(f"Error: {e}")
+                sys.exit(1)
+    return wrapper
+
+
+@_handle_path_error
 def cmd_query(args):
     project_root = find_project_root()
     G = load_graph_as_nx(project_root)
@@ -286,6 +305,7 @@ def cmd_query(args):
         sys.exit(1)
 
 
+@_handle_path_error
 def cmd_assert(args):
     """Same as query but returns exit code 0 (true) or 1 (false)."""
     project_root = find_project_root()
