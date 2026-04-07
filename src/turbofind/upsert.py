@@ -474,8 +474,8 @@ def main():
     combined_defs = existing_defs + all_defs
     topo = build_topology(combined_defs, all_calls, all_imps)
     graph["nodes"] = [{"id": n, **topo.nodes[n]} for n in topo.nodes]
-    graph["edges"] = [{"from": u, "to": v, "type": topo.edges[u, v].get("type", "calls")}
-                      for u, v in topo.edges]
+    graph["edges"] = [{"from": u, "to": v, "type": d.get("type", "calls")}
+                      for u, v, d in topo.edges(data=True)]
 
     graph_xml = graph_to_xml(graph)
     budget = config.get("graph", {}).get("max_tokens", 128000)
