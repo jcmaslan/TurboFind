@@ -10,7 +10,7 @@ from .core import (check_ollama, load_index, save_index, embed_text,
                    find_project_root, index_lock, file_sha1, text_sha1,
                    load_graph, save_graph, graph_to_xml, DEFAULT_INDEX)
 from .prompts import SYSTEM_PROMPT
-from .ast_utils import extract_definitions, extract_calls, build_topology
+from .ast_utils import extract_definitions, extract_calls, extract_imports, build_topology
 from .config import load_config, load_exclusion_spec, check_file_limits, estimate_file, check_graph_budget, compute_actual_cost, SOURCE_EXTENSIONS
 import numpy as np
 
@@ -358,6 +358,7 @@ def main():
         print("Building topology graph...")
         all_defs = []
         all_calls = []
+        all_imps = []
         successfully_extracted = set()
         for filepath in files:
             rel_path = os.path.relpath(filepath, project_root)
@@ -366,6 +367,7 @@ def main():
                     content = f.read()
                 all_defs.extend(extract_definitions(rel_path, content))
                 all_calls.extend(extract_calls(rel_path, content))
+                all_imps.extend(extract_imports(rel_path, content))
                 successfully_extracted.add(rel_path)
             except Exception as e:
                 print(f"  Skipped topology for {rel_path}: {e}")
@@ -376,9 +378,10 @@ def main():
                          for n in existing_nodes]
 
         combined_defs = existing_defs + all_defs
-        topo = build_topology(combined_defs, all_calls)
+        topo = build_topology(combined_defs, all_calls, all_imps)
         graph["nodes"] = [{"id": n, **topo.nodes[n]} for n in topo.nodes]
-        graph["edges"] = [{"from": u, "to": v} for u, v in topo.edges]
+        graph["edges"] = [{"from": u, "to": v, "type": topo.edges[u, v].get("type", "calls")}
+                          for u, v in topo.edges]
 
         save_graph(graph, project_root=project_root)
         print(f"Done. {len(graph['nodes'])} definitions, {len(graph['edges'])} edges saved to .turbofind/graph.json")
@@ -447,6 +450,7 @@ def main():
     print("Building topology graph...")
     all_defs = []
     all_calls = []
+    all_imps = []
     successfully_extracted = set()
     for filepath in files[:max_files]:
         rel_path = os.path.relpath(filepath, project_root)
@@ -455,6 +459,7 @@ def main():
                 content = f.read()
             all_defs.extend(extract_definitions(rel_path, content))
             all_calls.extend(extract_calls(rel_path, content))
+            all_imps.extend(extract_imports(rel_path, content))
             successfully_extracted.add(rel_path)
         except Exception as e:
             print(f"  Skipped topology for {rel_path}: {e}")
@@ -466,9 +471,10 @@ def main():
                      for n in existing_nodes]
 
     combined_defs = existing_defs + all_defs
-    topo = build_topology(combined_defs, all_calls)
+    topo = build_topology(combined_defs, all_calls, all_imps)
     graph["nodes"] = [{"id": n, **topo.nodes[n]} for n in topo.nodes]
-    graph["edges"] = [{"from": u, "to": v} for u, v in topo.edges]
+    graph["edges"] = [{"from": u, "to": v, "type": topo.edges[u, v].get("type", "calls")}
+                      for u, v in topo.edges]
 
     graph_xml = graph_to_xml(graph)
     budget = config.get("graph", {}).get("max_tokens", 128000)
