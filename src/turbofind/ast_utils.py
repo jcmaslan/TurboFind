@@ -38,12 +38,13 @@ _LANGUAGE_MODULES = {
     "typescript": tree_sitter_typescript,
 }
 
-# Tree-sitter node types for extracting definitions
+# Tree-sitter node types for extracting definitions.
+# Import nodes are handled separately by extract_imports().
 _DEFINITION_TYPES = {
-    "python": {"function_definition", "class_definition", "import_from_statement"},
-    "java": {"method_declaration", "class_declaration", "import_declaration"},
-    "javascript": {"function_declaration", "class_declaration", "import_statement", "export_statement"},
-    "typescript": {"function_declaration", "class_declaration", "import_statement", "export_statement"},
+    "python": {"function_definition", "class_definition"},
+    "java": {"method_declaration", "class_declaration"},
+    "javascript": {"function_declaration", "class_declaration", "export_statement"},
+    "typescript": {"function_declaration", "class_declaration", "export_statement"},
 }
 
 # Tree-sitter node types for extracting call sites
@@ -158,9 +159,10 @@ def _get_base_class(node, language):
 
 
 def extract_definitions(filepath, content):
-    """Extract top-level definitions (classes, functions, imports) from a source file.
+    """Extract top-level definitions (classes, functions) from a source file.
 
     Returns a list of dicts with keys: id, file, type, line, and optionally extends (for classes).
+    Import extraction is handled separately by extract_imports().
     """
     ext = os.path.splitext(filepath)[1]
     language = EXTENSION_TO_LANGUAGE.get(ext)
@@ -185,8 +187,6 @@ def extract_definitions(filepath, content):
         # Determine type
         if "class" in node.type:
             node_type = "class"
-        elif "import" in node.type:
-            node_type = "import"
         else:
             node_type = "def"
 
