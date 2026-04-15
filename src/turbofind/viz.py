@@ -3,6 +3,7 @@ import argparse
 import http.server
 import os
 import socketserver
+from http import HTTPStatus
 import sys
 import webbrowser
 from importlib.resources import files
@@ -49,7 +50,7 @@ def main():
                 self.send_response(code, message)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Cache-Control", "no-store, max-age=0")
-                body = (explain or message or http.HTTPStatus(code).phrase).encode("utf-8")
+                body = (explain or message or HTTPStatus(code).phrase).encode("utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 if self.command != "HEAD":
