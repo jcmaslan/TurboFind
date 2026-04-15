@@ -78,6 +78,7 @@ Launch Claude Code and ask it to refactor structural elements. Claude will autom
 - `tf-upsert . --dry-run` — Preview indexing without calling APIs
 - `tf-upsert . --max-files 50` — Limit batch size
 - `tf-upsert . --cost-limit 10.0` — Set cost confirmation threshold
+- `tf-viz` — Launch an interactive browser view of the current project's `graph.json` (nodes styled by type — module/class/def — and edges colored by `imports`/`calls`/`extends`, laid out with Cytoscape). The launcher is stdlib-only; the in-browser viewer loads Cytoscape from a CDN on first use, so the page needs network access.
 
 ## A/B Testing
 

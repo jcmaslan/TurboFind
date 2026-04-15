@@ -1,0 +1,497 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>TurboFind graph explorer</title>
+<script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<style>
+  html,body{margin:0;height:100%;font-family:-apple-system,Segoe UI,sans-serif;font-size:13px;color:#e6e6e6;background:#1d1f23}
+  #app{display:grid;grid-template-columns:340px 1fr;height:100vh}
+  #side{border-right:1px solid #333;display:flex;flex-direction:column;min-height:0}
+  #search{padding:8px;border-bottom:1px solid #333}
+  #search input,#search select{width:100%;box-sizing:border-box;padding:6px 8px;background:#2a2d33;border:1px solid #444;color:#eee;border-radius:4px;margin-bottom:4px;font-size:12px}
+  #results{overflow:auto;flex:1}
+  .row{padding:6px 10px;border-bottom:1px solid #2a2d33;cursor:pointer;word-break:break-all;font-size:12px}
+  .row:hover{background:#2a2d33}
+  .row .t{color:#7fbcff;font-size:10px;text-transform:uppercase;margin-right:6px}
+  .dim{color:#7a7f87}
+  .tail{color:#fff;font-weight:600}
+  .row.sel{background:#34506e}
+  #cy{width:100%;height:100%}
+  #detail{position:absolute;top:8px;right:8px;max-width:460px;background:#2a2d33e6;border:1px solid #444;border-radius:6px;padding:10px 12px;font-size:12px;pointer-events:auto}
+  #detail h3{margin:0 0 6px 0;font-size:13px;word-break:break-all}
+  #detail .meta{color:#aaa;margin-bottom:6px}
+  #detail ul{margin:4px 0;padding-left:18px;max-height:180px;overflow:auto}
+  #detail li{cursor:pointer;word-break:break-all}
+  #detail li:hover{color:#7fbcff}
+  #controls{padding:8px;border-bottom:1px solid #333;display:flex;gap:6px;align-items:center;font-size:12px}
+  #controls label{color:#bbb}
+  #stats{padding:8px 10px;color:#888;font-size:11px;border-top:1px solid #333}
+  .legend{display:flex;gap:10px;padding:6px 10px;font-size:11px;color:#aaa;border-top:1px solid #333}
+  .sw{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:middle}
+  button{background:#3a4252;color:#eee;border:1px solid #555;border-radius:4px;padding:4px 8px;cursor:pointer}
+  button:hover{background:#4a5468}
+  .kbd{color:#888}
+  body.busy, body.busy *{cursor:progress !important}
+  #progress{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:#2a2d33f0;border:1px solid #555;border-radius:8px;padding:16px 22px;min-width:280px;text-align:center;box-shadow:0 8px 24px #0008;display:none}
+  #progress .bar{height:6px;background:#1d1f23;border-radius:3px;margin:10px 0;overflow:hidden}
+  #progress .bar>div{height:100%;background:#7fbcff;width:0%;transition:width .15s}
+  #progress .msg{font-size:12px;color:#ddd}
+  #progress .hint{font-size:11px;color:#888;margin-top:8px}
+  #progress button{margin-top:6px}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="side">
+    <div id="search">
+      <input id="q" placeholder="search id / file / name… (regex ok)" autofocus aria-label="Search node ids (regex supported)">
+      <select id="typeFilter" aria-label="Filter by node type">
+        <option value="">all types</option>
+        <option value="module">module</option>
+        <option value="class">class</option>
+        <option value="def">def</option>
+      </select>
+    </div>
+    <div id="controls">
+      <label>hops <input id="hops" type="number" min="1" max="4" value="1" style="width:40px"></label>
+      <label><input type="checkbox" id="incoming" checked> in</label>
+      <label><input type="checkbox" id="outgoing" checked> out</label>
+      <button id="expand">expand</button>
+      <button id="clear">clear</button>
+      <button id="share" title="Copy shareable URL to clipboard">share</button>
+    </div>
+    <div id="results"></div>
+    <div class="legend">
+      <span><span class="sw" style="background:#7fbcff"></span>module</span>
+      <span><span class="sw" style="background:#f0a050"></span>class</span>
+      <span><span class="sw" style="background:#8ad08a"></span>def</span>
+    </div>
+    <div id="stats">loading…</div>
+  </div>
+  <div style="position:relative;min-width:0">
+    <div id="cy"></div>
+    <div id="detail" style="display:none"></div>
+    <div id="progress">
+      <div class="msg" id="progressMsg">working…</div>
+      <div class="bar"><div id="progressBar"></div></div>
+      <button id="cancelBtn">Cancel (Esc)</button>
+      <div class="hint">rendering can be slow for highly-connected nodes</div>
+    </div>
+  </div>
+</div>
+<script>
+const NODE_COLOR = {module:'#7fbcff', class:'#f0a050', def:'#8ad08a'};
+const EDGE_COLOR = {imports:'#7fbcff', calls:'#8ad08a', extends:'#f0a050'};
+
+let GRAPH = {nodes:[], edges:[]};
+let NODE_BY_ID = new Map();
+let OUT = new Map();  // id -> [{to,type}]
+let IN  = new Map();  // id -> [{from,type}]
+let SEARCH_RESULTS = [];
+let SELECTED = null;
+let EXPANSIONS = []; // ids additionally expanded on top of the focused neighborhood
+let APPLYING_URL = false;
+let cy;
+let CURRENT_JOB = null; // {cancelled, layout}
+
+class CancelledError extends Error { constructor(){ super('cancelled'); } }
+
+function startJob(label) {
+  if (CURRENT_JOB) cancelJob();
+  const job = {cancelled:false, layout:null, label};
+  CURRENT_JOB = job;
+  document.body.classList.add('busy');
+  showProgress(label, 0);
+  return job;
+}
+function finishJob(job) {
+  if (CURRENT_JOB === job) {
+    CURRENT_JOB = null;
+    document.body.classList.remove('busy');
+    hideProgress();
+  }
+}
+function cancelJob() {
+  if (!CURRENT_JOB) return;
+  CURRENT_JOB.cancelled = true;
+  if (CURRENT_JOB.layout) { try { CURRENT_JOB.layout.stop(); } catch(_){} }
+  document.body.classList.remove('busy');
+  hideProgress();
+  flashStatus('cancelled');
+  CURRENT_JOB = null;
+}
+function checkCancel(job) { if (job.cancelled) throw new CancelledError(); }
+function yieldToUi() { return new Promise(r => setTimeout(r, 0)); }
+
+function showProgress(msg, pct) {
+  document.getElementById('progressMsg').textContent = msg;
+  document.getElementById('progressBar').style.width = (pct==null?10:pct)+'%';
+  document.getElementById('progress').style.display = 'block';
+}
+function updateProgress(msg, pct) {
+  document.getElementById('progressMsg').textContent = msg;
+  if (pct!=null) document.getElementById('progressBar').style.width = pct+'%';
+}
+function hideProgress() { document.getElementById('progress').style.display = 'none'; }
+
+async function load() {
+  const stats = document.getElementById('stats');
+  stats.textContent = 'fetching graph.json…';
+  const r = await fetch('graph.json?t=' + Date.now(), { cache: 'no-store' });
+  if (!r.ok) {
+    const body = await r.text().catch(() => '');
+    const snippet = body.trim().replace(/\s+/g, ' ').slice(0, 200);
+    stats.textContent = `failed to load graph.json (${r.status} ${r.statusText})${snippet ? `: ${snippet}` : ''}`;
+    return;
+  }
+  GRAPH = await r.json();
+  stats.textContent = `indexing ${GRAPH.nodes.length.toLocaleString()} nodes / ${GRAPH.edges.length.toLocaleString()} edges…`;
+  for (const n of GRAPH.nodes) NODE_BY_ID.set(n.id, n);
+  for (const e of GRAPH.edges) {
+    if (!OUT.has(e.from)) OUT.set(e.from, []);
+    OUT.get(e.from).push(e);
+    if (!IN.has(e.to)) IN.set(e.to, []);
+    IN.get(e.to).push(e);
+  }
+  stats.textContent = `${GRAPH.nodes.length.toLocaleString()} nodes · ${GRAPH.edges.length.toLocaleString()} edges`;
+  if (typeof window.cytoscape !== 'function') {
+    stats.textContent = 'Cytoscape failed to load from CDN — check your network connection and reload.';
+    return;
+  }
+  initCy();
+  runSearch();
+}
+
+function initCy() {
+  cy = cytoscape({
+    container: document.getElementById('cy'),
+    wheelSensitivity: 0.3,
+    style: [
+      {selector:'node', style:{
+        'background-color':'data(color)',
+        'label':'data(label)','font-size':10,'color':'#eee',
+        'text-valign':'center','text-halign':'right','text-margin-x':4,
+        'width':'data(size)','height':'data(size)',
+        'border-width':1,'border-color':'#222',
+        'z-index-compare':'manual','z-index':1,
+      }},
+      // Raised label state — used on hover and on the selected node. The
+      // text-background makes the label legible over overlapping neighbors,
+      // and z-index lifts this node (and its label) above the rest.
+      {selector:'node.raised', style:{
+        'font-size':12,'color':'#fff','font-weight':'bold',
+        'text-background-color':'#1d1f23','text-background-opacity':0.95,
+        'text-background-padding':3,'text-background-shape':'roundrectangle',
+        'text-border-color':'#555','text-border-opacity':1,'text-border-width':1,
+        'z-index':999,
+      }},
+      {selector:'node.sel', style:{'border-color':'#fff','border-width':3}},
+      {selector:'edge', style:{
+        'line-color':'data(color)','target-arrow-color':'data(color)',
+        'target-arrow-shape':'triangle','curve-style':'bezier',
+        'width':1.2,'opacity':0.75,
+        'label':'data(type)','font-size':8,'color':'#888','text-rotation':'autorotate',
+        'z-index':1,
+      }},
+      // Edges touching the raised node also ride up so they render above siblings.
+      {selector:'edge.raised', style:{'opacity':1,'width':2,'z-index':998}},
+    ],
+  });
+  cy.on('tap','node',evt => {
+    const id = evt.target.id();
+    cy.$('node.sel').removeClass('sel');
+    evt.target.addClass('sel');
+    raiseNode(evt.target);
+    showDetail(id);
+  });
+  cy.on('dblclick','node',evt => expand(evt.target.id()));
+  cy.on('mouseover','node',evt => raiseNode(evt.target));
+  cy.on('mouseout','node',evt => {
+    // Keep the selected node raised even after the pointer leaves.
+    if (!evt.target.hasClass('sel')) unraiseNode(evt.target);
+  });
+}
+
+function raiseNode(n) {
+  n.addClass('raised');
+  n.connectedEdges().addClass('raised');
+}
+function unraiseNode(n) {
+  n.removeClass('raised');
+  // only drop the edge's raised state if neither endpoint is still raised
+  n.connectedEdges().forEach(e => {
+    const s = e.source(), t = e.target();
+    if (!s.hasClass('raised') && !t.hasClass('raised')) e.removeClass('raised');
+  });
+}
+
+function runSearch() {
+  const q = document.getElementById('q').value.trim();
+  const tf = document.getElementById('typeFilter').value;
+  const results = document.getElementById('results');
+  results.innerHTML = '';
+  if (!q && !tf) { results.innerHTML = '<div class="row" style="color:#888">type to search</div>'; SEARCH_RESULTS=[]; return; }
+  let rx = null;
+  if (q) {
+    try {
+      rx = new RegExp(q,'i');
+    } catch(e) {
+      results.innerHTML = `<div class="row" style="color:#c66">invalid regex: ${escapeHtml(e.message)}</div>`;
+      SEARCH_RESULTS = [];
+      return;
+    }
+  }
+  const out = [];
+  for (const n of GRAPH.nodes) {
+    if (tf && n.type !== tf) continue;
+    if (rx && !rx.test(n.id)) continue;
+    out.push(n);
+    if (out.length >= 300) break;
+  }
+  SEARCH_RESULTS = out;
+  for (const n of out) {
+    const d = document.createElement('div');
+    d.className = 'row';
+    d.innerHTML = `<span class="t">${escapeHtml(n.type)}</span>${formatId(n.id)}`;
+    d.onclick = () => focusNode(n.id);
+    results.appendChild(d);
+  }
+  if (!out.length) results.innerHTML = '<div class="row" style="color:#888">no matches</div>';
+}
+
+function escapeHtml(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+// Render an id with the last path segment (filename + ::Symbol) emphasized.
+// e.g. "a/b/c/Foo.java::Foo.bar" -> <span class=dim>a/b/c/</span><span class=tail>Foo.java::Foo.bar</span>
+function formatId(id) {
+  const i = Math.max(id.lastIndexOf('/'), id.lastIndexOf('\\'));
+  if (i < 0) return `<span class="tail">${escapeHtml(id)}</span>`;
+  return `<span class="dim">${escapeHtml(id.slice(0,i+1))}</span><span class="tail">${escapeHtml(id.slice(i+1))}</span>`;
+}
+
+async function focusNode(id, opts={}) {
+  SELECTED = id;
+  if (!opts.keepExpansions) EXPANSIONS = [];
+  const job = startJob('Rendering neighborhood…');
+  try {
+    cy.startBatch();
+    cy.elements().remove();
+    await addNeighborhood(job, id, parseInt(document.getElementById('hops').value)||1);
+    for (const xid of EXPANSIONS) {
+      checkCancel(job);
+      await addNeighborhood(job, xid, 1);
+    }
+    cy.endBatch();
+    await layoutAndFit(job);
+    showDetail(id);
+    syncUrl();
+    finishJob(job);
+  } catch (e) {
+    try { cy.endBatch(); } catch(_){}
+    if (!(e instanceof CancelledError)) { console.error(e); flashStatus('error: '+e.message); }
+    finishJob(job);
+  }
+}
+
+async function expand(id) {
+  if (id !== SELECTED && !EXPANSIONS.includes(id)) EXPANSIONS.push(id);
+  const job = startJob('Expanding…');
+  try {
+    cy.startBatch();
+    await addNeighborhood(job, id, 1);
+    cy.endBatch();
+    await layoutAndFit(job);
+    syncUrl();
+    finishJob(job);
+  } catch (e) {
+    try { cy.endBatch(); } catch(_){}
+    if (!(e instanceof CancelledError)) { console.error(e); flashStatus('error: '+e.message); }
+    finishJob(job);
+  }
+}
+
+async function addNeighborhood(job, id, hops) {
+  const incoming = document.getElementById('incoming').checked;
+  const outgoing = document.getElementById('outgoing').checked;
+  const frontier = [[id,0]];
+  const seen = new Set([id]);
+  addNode(id);
+  let processed = 0;
+  // Index-based queue avoids O(n) shift() cost on large neighborhoods.
+  let qi = 0;
+  while (qi < frontier.length) {
+    checkCancel(job);
+    const [cur,depth] = frontier[qi++];
+    if (depth >= hops) continue;
+    const outs = outgoing ? (OUT.get(cur)||[]) : [];
+    const ins  = incoming ? (IN.get(cur)||[])  : [];
+    for (const e of outs) {
+      addNode(e.to); addEdge(e);
+      if (!seen.has(e.to)) { seen.add(e.to); frontier.push([e.to,depth+1]); }
+    }
+    for (const e of ins) {
+      addNode(e.from); addEdge(e);
+      if (!seen.has(e.from)) { seen.add(e.from); frontier.push([e.from,depth+1]); }
+    }
+    processed++;
+    if (processed % 50 === 0) {
+      updateProgress(`Collecting graph… ${seen.size.toLocaleString()} nodes, ${cy.edges().length.toLocaleString()} edges`, Math.min(60, 10 + seen.size/40));
+      await yieldToUi();
+      checkCancel(job);
+    }
+  }
+  cy.$('node').removeClass('sel').removeClass('raised');
+  cy.$('edge').removeClass('raised');
+  if (SELECTED) {
+    const selNode = cy.$(`#${CSS.escape(SELECTED)}`);
+    selNode.addClass('sel');
+    raiseNode(selNode);
+  }
+  updateProgress(`Graph built: ${seen.size.toLocaleString()} nodes, ${cy.edges().length.toLocaleString()} edges`, 65);
+  await yieldToUi();
+  checkCancel(job);
+}
+
+function addNode(id) {
+  if (cy.$id(id).length) return;
+  const n = NODE_BY_ID.get(id);
+  if (!n) return;
+  const label = id.split('::').pop();
+  const size = {module:28,class:22,def:14}[n.type]||14;
+  cy.add({group:'nodes', data:{id, label, color:NODE_COLOR[n.type]||'#aaa', size}});
+}
+function addEdge(e) {
+  const eid = e.from+'|'+e.type+'|'+e.to;
+  if (cy.$id(eid).length) return;
+  if (!cy.$id(e.from).length || !cy.$id(e.to).length) return;
+  cy.add({group:'edges', data:{id:eid, source:e.from, target:e.to, type:e.type, color:EDGE_COLOR[e.type]||'#888'}});
+}
+function layoutAndFit(job) {
+  return new Promise((resolve) => {
+    const nodeCount = cy.nodes().length;
+    // Pick a layout: cose is good but O(n^2) — fall back to faster layouts on big graphs.
+    let opts;
+    if (nodeCount > 400) {
+      opts = {name:'concentric', animate:false, fit:true, padding:40, minNodeSpacing:20};
+    } else if (nodeCount > 150) {
+      opts = {name:'cose', animate:false, nodeRepulsion:6000, idealEdgeLength:70, fit:true, padding:40, numIter:300};
+    } else {
+      opts = {name:'cose', animate:true, animationDuration:400, nodeRepulsion:8000, idealEdgeLength:90, fit:true, padding:40};
+    }
+    updateProgress(`Laying out ${nodeCount.toLocaleString()} nodes (${opts.name})…`, 80);
+    const layout = cy.layout(opts);
+    if (job) job.layout = layout;
+    let done = false;
+    const finish = () => { if (done) return; done = true; if (job) job.layout = null; resolve(); };
+    layout.one('layoutstop', finish);
+    try { layout.run(); } catch(e) { finish(); return; }
+    // Defensive timeout so we never leave the progress UI hanging.
+    setTimeout(() => { if (!done) { try{layout.stop();}catch(_){} finish(); } }, 15000);
+  });
+}
+
+function showDetail(id) {
+  const n = NODE_BY_ID.get(id);
+  const d = document.getElementById('detail');
+  if (!n) { d.style.display='none'; return; }
+  const outs = OUT.get(id)||[];
+  const ins = IN.get(id)||[];
+  const listEdges = arr => arr.slice(0,80).map(e=>{
+    const other = e.from===id ? e.to : e.from;
+    const arrow = e.from===id ? '→' : '←';
+    return `<li data-id="${escapeHtml(other)}"><span style="color:${EDGE_COLOR[e.type]||'#aaa'}">${escapeHtml(e.type)}</span> ${arrow} ${formatId(other)}</li>`;
+  }).join('');
+  d.innerHTML = `
+    <h3><span style="color:${NODE_COLOR[n.type]}">●</span> ${formatId(id)}</h3>
+    <div class="meta">${escapeHtml(n.type)} · ${escapeHtml(n.file)}:${escapeHtml(n.line)}</div>
+    <div><b>out (${outs.length})</b><ul>${listEdges(outs)||'<li style="color:#888">none</li>'}</ul></div>
+    <div><b>in (${ins.length})</b><ul>${listEdges(ins)||'<li style="color:#888">none</li>'}</ul></div>
+    <div style="margin-top:6px;color:#888" class="kbd">dbl-click node = expand · click = detail</div>
+  `;
+  d.style.display='block';
+  d.querySelectorAll('li[data-id]').forEach(li=>{
+    li.onclick = () => focusNode(li.getAttribute('data-id'));
+  });
+}
+
+let searchTimer;
+document.getElementById('q').addEventListener('input', ()=>{
+  clearTimeout(searchTimer); searchTimer = setTimeout(()=>{ runSearch(); syncUrl(); }, 120);
+});
+document.getElementById('typeFilter').addEventListener('change', ()=>{ runSearch(); syncUrl(); });
+document.getElementById('expand').onclick = ()=> SELECTED && expand(SELECTED);
+document.getElementById('clear').onclick = ()=> {
+  cancelJob();
+  SELECTED=null; EXPANSIONS=[];
+  cy.elements().remove();
+  document.getElementById('detail').style.display='none';
+  syncUrl();
+};
+document.getElementById('cancelBtn').onclick = cancelJob;
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && CURRENT_JOB) { e.preventDefault(); cancelJob(); }
+});
+document.getElementById('share').onclick = async ()=>{
+  syncUrl();
+  const url = location.href;
+  try { await navigator.clipboard.writeText(url); flashStatus('link copied: '+url); }
+  catch(_) { prompt('Copy this URL:', url); }
+};
+document.getElementById('hops').addEventListener('change', ()=> SELECTED && focusNode(SELECTED, {keepExpansions:true}));
+document.getElementById('incoming').addEventListener('change', ()=> SELECTED && focusNode(SELECTED, {keepExpansions:true}));
+document.getElementById('outgoing').addEventListener('change', ()=> SELECTED && focusNode(SELECTED, {keepExpansions:true}));
+
+function flashStatus(msg) {
+  const s = document.getElementById('stats');
+  const prev = s.textContent;
+  s.textContent = msg;
+  setTimeout(()=> s.textContent = prev, 2000);
+}
+
+function syncUrl() {
+  if (APPLYING_URL) return;
+  const p = new URLSearchParams();
+  const q = document.getElementById('q').value.trim();
+  const t = document.getElementById('typeFilter').value;
+  if (q) p.set('q', q);
+  if (t) p.set('t', t);
+  p.set('h', document.getElementById('hops').value);
+  p.set('i', document.getElementById('incoming').checked ? '1':'0');
+  p.set('o', document.getElementById('outgoing').checked ? '1':'0');
+  if (SELECTED) p.set('n', SELECTED);
+  if (EXPANSIONS.length) p.set('x', EXPANSIONS.join('\n'));
+  const newHash = '#' + p.toString();
+  if (newHash !== location.hash) history.replaceState(null,'',location.pathname + newHash);
+}
+
+function applyUrl() {
+  const hash = location.hash.replace(/^#/, '');
+  if (!hash) return;
+  APPLYING_URL = true;
+  try {
+    const p = new URLSearchParams(hash);
+    if (p.has('q')) document.getElementById('q').value = p.get('q');
+    if (p.has('t')) document.getElementById('typeFilter').value = p.get('t');
+    if (p.has('h')) document.getElementById('hops').value = p.get('h');
+    if (p.has('i')) document.getElementById('incoming').checked = p.get('i')==='1';
+    if (p.has('o')) document.getElementById('outgoing').checked = p.get('o')==='1';
+    runSearch();
+    const n = p.get('n');
+    const xs = p.get('x') ? p.get('x').split('\n').filter(Boolean) : [];
+    if (n) {
+      EXPANSIONS = xs;
+      // focusNode will honor EXPANSIONS because we pass keepExpansions:true
+      APPLYING_URL = false; // release so inner syncUrl runs normally after render
+      focusNode(n, {keepExpansions:true});
+      return;
+    }
+  } finally { APPLYING_URL = false; }
+}
+
+window.addEventListener('hashchange', ()=>{ if (!APPLYING_URL) applyUrl(); });
+
+load().then(applyUrl).catch(e=>{document.getElementById('stats').textContent='error: '+e.message;});
+</script>
+</body>
+</html>
