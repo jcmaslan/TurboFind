@@ -214,12 +214,15 @@ def _graph_expand(display_list, metadata, project_root, args):
     fused_order = _rrf([seed_ranked, graph_ranked], weights=[1.0, graph_weight])
 
     min_seed_sim = min(seed_files.values())
+    floor = float(getattr(args, "floor", 0.0) or 0.0)
     new_display = []
     for fp in fused_order:
         if fp in seed_meta:
             new_display.append((seed_files[fp], seed_meta[fp]))
         else:
             synthetic = min(neighbor_scores[fp], 0.95 * min_seed_sim)
+            if synthetic < floor:
+                continue
             new_display.append((synthetic, file_to_meta[fp]))
     # Preserve non-file entries in their original order
     for sim, meta in display_list:

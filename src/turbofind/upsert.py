@@ -8,7 +8,7 @@ import glob as globlib
 from anthropic import Anthropic, RateLimitError
 from .core import (check_ollama, load_index, save_index, embed_text,
                    find_project_root, index_lock, file_sha1, text_sha1,
-                   load_graph, save_graph, graph_to_xml, build_file_subgraph, DEFAULT_INDEX)
+                   load_graph, save_graph, graph_to_xml, build_file_subgraph, index_graph, DEFAULT_INDEX)
 from .prompts import SYSTEM_PROMPT
 from .ast_utils import extract_definitions, extract_calls, extract_imports, build_topology
 from .config import load_config, load_exclusion_spec, check_file_limits, estimate_file, compute_actual_cost, SOURCE_EXTENSIONS
@@ -31,7 +31,7 @@ def nuke_file(filepath, index, metadata):
         del metadata[vid]
     return len(ids_to_remove)
 
-def synthesize_with_claude(filepath, content, project_root, graph=None):
+def synthesize_with_claude(filepath, content, project_root, graph=None, graph_index=None):
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set.")
@@ -52,7 +52,7 @@ def synthesize_with_claude(filepath, content, project_root, graph=None):
 
     subgraph_xml = None
     if graph:
-        sub = build_file_subgraph(graph, filepath)
+        sub = build_file_subgraph(graph, filepath, index=graph_index)
         if sub["nodes"]:
             subgraph_xml = graph_to_xml(sub)
 
@@ -115,7 +115,7 @@ def get_unique_id():
     return uuid.uuid4().int >> 64
 
 
-def upsert_single_file(filepath, project_root, index, metadata, graph=None):
+def upsert_single_file(filepath, project_root, index, metadata, graph=None, graph_index=None):
     """Process a single file through the full Nuke-Synthesize-Chunk-Embed-Pave pipeline."""
     rel_path = os.path.relpath(filepath, project_root)
 
@@ -129,7 +129,7 @@ def upsert_single_file(filepath, project_root, index, metadata, graph=None):
     content_hash = text_sha1(content)
 
     print(f"  Synthesizing with Claude...")
-    synthesis, usage = synthesize_with_claude(rel_path, content, project_root, graph)
+    synthesis, usage = synthesize_with_claude(rel_path, content, project_root, graph, graph_index)
 
     actual_cost = compute_actual_cost(usage)
     severity = extract_xml_tag(synthesis, "legacy_coupling_severity")
@@ -397,15 +397,19 @@ def main():
         total = len(files)
         for i, filepath in enumerate(files, 1):
             rel_path = os.path.relpath(filepath, project_root)
-            try:
-                with open(filepath, 'r') as f:
-                    content = f.read()
-                all_defs.extend(extract_definitions(rel_path, content))
-                all_calls.extend(extract_calls(rel_path, content))
-                all_imps.extend(extract_imports(rel_path, content))
-                successfully_extracted.add(rel_path)
-            except Exception as e:
-                print(f"\n  Skipped topology for {rel_path}: {e}")
+            ok, reason = check_file_limits(filepath, config)
+            if not ok:
+                print(f"\n  Skipped topology for {rel_path}: {reason}")
+            else:
+                try:
+                    with open(filepath, 'r') as f:
+                        content = f.read()
+                    all_defs.extend(extract_definitions(rel_path, content))
+                    all_calls.extend(extract_calls(rel_path, content))
+                    all_imps.extend(extract_imports(rel_path, content))
+                    successfully_extracted.add(rel_path)
+                except Exception as e:
+                    print(f"\n  Skipped topology for {rel_path}: {e}")
             sys.stdout.write(f"\r  [{i}/{total}] extracted — {len(all_defs)} defs, {len(all_calls)} calls, {len(all_imps)} imports")
             sys.stdout.flush()
             if i == total:
@@ -506,6 +510,7 @@ def main():
         print("Topology build failed; aborting.")
         sys.exit(result.returncode)
     graph = load_graph(project_root=project_root)
+    graph_index_data = index_graph(graph)
     print(f"Topology: {len(graph['nodes'])} definitions, {len(graph['edges'])} edges (per-file 1-hop subgraphs injected at synthesis)")
 
     # ── Phase 2: Synthesize + embed (API calls) ──
@@ -550,7 +555,7 @@ def main():
                 print(f"[{processed+1}/{min(len(files), max_files)}] {rel_path}")
 
                 try:
-                    _, file_cost = upsert_single_file(filepath, project_root, index, metadata, graph=graph)
+                    _, file_cost = upsert_single_file(filepath, project_root, index, metadata, graph=graph, graph_index=graph_index_data)
                     actual_cost += file_cost
                     processed += 1
                 except Exception as e:
