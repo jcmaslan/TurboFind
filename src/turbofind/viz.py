@@ -58,8 +58,14 @@ def main():
     class ReusableTCPServer(socketserver.TCPServer):
         allow_reuse_address = True
 
+    host = "127.0.0.1"
     url = f"http://localhost:{args.port}/"
-    with ReusableTCPServer(("127.0.0.1", args.port), Handler) as httpd:
+    try:
+        httpd = ReusableTCPServer((host, args.port), Handler)
+    except OSError as e:
+        print(f"error: failed to bind {host}:{args.port}: {e}", file=sys.stderr)
+        sys.exit(1)
+    with httpd:
         print(f"Serving graph viewer at {url} (graph: {graph_path})")
         print("Press Ctrl+C to stop.")
         # Open the browser only after the socket is bound so the first tab

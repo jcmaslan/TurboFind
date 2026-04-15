@@ -139,6 +139,12 @@ async function load() {
   const stats = document.getElementById('stats');
   stats.textContent = 'fetching graph.json…';
   const r = await fetch('graph.json?t=' + Date.now(), { cache: 'no-store' });
+  if (!r.ok) {
+    const body = await r.text().catch(() => '');
+    const snippet = body.trim().replace(/\s+/g, ' ').slice(0, 200);
+    stats.textContent = `failed to load graph.json (${r.status} ${r.statusText})${snippet ? `: ${snippet}` : ''}`;
+    return;
+  }
   GRAPH = await r.json();
   stats.textContent = `indexing ${GRAPH.nodes.length.toLocaleString()} nodes / ${GRAPH.edges.length.toLocaleString()} edges…`;
   for (const n of GRAPH.nodes) NODE_BY_ID.set(n.id, n);
