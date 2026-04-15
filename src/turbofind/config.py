@@ -69,6 +69,13 @@ def load_config(project_root):
                 config[section].update(user_config[section])
         if "search" in user_config and "graph" in user_config["search"]:
             config["search"]["graph"].update(user_config["search"]["graph"])
+        if "graph" in user_config:
+            import sys
+            print(
+                "[turbofind] Ignoring obsolete [graph] section in .turbofind.toml "
+                "(graph.max_tokens was removed; see search.graph for current options).",
+                file=sys.stderr,
+            )
 
     return config
 
