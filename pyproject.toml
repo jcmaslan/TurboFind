@@ -28,6 +28,10 @@ tf-init = "turbofind.init:main"
 tf-search = "turbofind.search:main"
 tf-upsert = "turbofind.upsert:main"
 tf-verify = "turbofind.verify:main"
+tf-viz = "turbofind.viz:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+turbofind = ["viz_assets/*"]
