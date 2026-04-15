@@ -382,8 +382,14 @@ def main():
         project_root = find_project_root(start_dir)
 
         config = load_config(project_root)
+        if args.max_file_size is not None:
+            config["per_file"]["max_size_bytes"] = args.max_file_size
+        if args.max_lines is not None:
+            config["per_file"]["max_lines"] = args.max_lines
+        if args.max_files is not None:
+            config["per_batch"]["max_files"] = args.max_files
         exclusion_spec = load_exclusion_spec(project_root, config["exclude"]["patterns"])
-        files = resolve_paths(args.paths, project_root, exclusion_spec)
+        files = resolve_paths(args.paths, project_root, exclusion_spec)[: config["per_batch"]["max_files"]]
 
         if not files:
             print("No files matched after applying exclusions.")
@@ -504,7 +510,14 @@ def main():
     # process isolates that damage so Phase 2 (usearch + HTTP) runs cleanly.
     import subprocess
     subprocess_cmd = [sys.executable, "-m", "turbofind.upsert", "--graph-only",
-                      "--index", args.index] + list(args.paths)
+                      "--index", args.index]
+    if args.max_file_size is not None:
+        subprocess_cmd += ["--max-file-size", str(args.max_file_size)]
+    if args.max_lines is not None:
+        subprocess_cmd += ["--max-lines", str(args.max_lines)]
+    if args.max_files is not None:
+        subprocess_cmd += ["--max-files", str(args.max_files)]
+    subprocess_cmd += list(args.paths)
     result = subprocess.run(subprocess_cmd)
     if result.returncode != 0:
         print("Topology build failed; aborting.")
@@ -566,7 +579,9 @@ def main():
             print(f"\n\nInterrupted. Saving {processed} files indexed so far...")
 
         save_index(index, metadata, project_root=project_root, index_name=args.index)
-        save_graph(graph, project_root=project_root)
+        # graph.json was already written by the --graph-only subprocess under its
+        # own lock; resaving here would race with any other process that updated
+        # it in between, so we leave it alone.
         print(f"\nDone. Processed {processed} files, skipped {skipped}. Actual cost: ${actual_cost:.4f}")
 
 

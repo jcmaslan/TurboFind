@@ -170,7 +170,7 @@ def load_file_adjacency(project_root=None, edge_weights=None):
     if not os.path.exists(graph_path):
         return {}
 
-    weights = edge_weights or _EDGE_WEIGHTS
+    weights = _EDGE_WEIGHTS if edge_weights is None else edge_weights
     weights_key = tuple(sorted(weights.items()))
     cache_key = (root, weights_key)
     mtime = os.path.getmtime(graph_path)
@@ -242,7 +242,15 @@ def build_file_subgraph(graph_dict, file_path, index=None):
             included_ids.add(edge["from"])
             included_ids.add(edge["to"])
 
-    nodes = [nodes_by_id[nid] for nid in included_ids if nid in nodes_by_id]
+    # Deterministic ordering keeps prompt-cache hits stable across runs
+    nodes = sorted(
+        (nodes_by_id[nid] for nid in included_ids if nid in nodes_by_id),
+        key=lambda n: (n.get("file", ""), n.get("line", 0), n["id"]),
+    )
+    kept_edges = sorted(
+        kept_edges,
+        key=lambda e: (e["from"], e["to"], e.get("type", "")),
+    )
     return {"nodes": nodes, "edges": kept_edges}
 
 
