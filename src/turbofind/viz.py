@@ -2,10 +2,8 @@
 import argparse
 import http.server
 import os
-import shutil
 import socketserver
 import sys
-import tempfile
 import webbrowser
 from importlib.resources import files
 from .core import find_project_root, TURBOFIND_DIR, GRAPH_FILENAME
@@ -19,44 +17,58 @@ def main():
     args = parser.parse_args()
 
     project_root = find_project_root()
-    graph_path = args.graph or os.path.join(project_root, TURBOFIND_DIR, GRAPH_FILENAME)
-    graph_path = os.path.abspath(graph_path)
+    graph_path = os.path.abspath(
+        args.graph or os.path.join(project_root, TURBOFIND_DIR, GRAPH_FILENAME)
+    )
     if not os.path.isfile(graph_path):
         print(f"error: graph.json not found at {graph_path}", file=sys.stderr)
         print("Run `tf-upsert . --graph-only` to build it.", file=sys.stderr)
         sys.exit(1)
 
-    html_src = files("turbofind.viz_assets").joinpath("index.html")
-    serve_dir = tempfile.mkdtemp(prefix="tf-viz-")
-    try:
-        with html_src.open("rb") as src, open(os.path.join(serve_dir, "index.html"), "wb") as dst:
-            shutil.copyfileobj(src, dst)
-        # Symlink graph.json so the browser fetches the live file; fall back to copy on filesystems without symlink.
-        linked = os.path.join(serve_dir, "graph.json")
+    html_bytes = files("turbofind.viz_assets").joinpath("index.html").read_bytes()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def _send(self, body, ctype):
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            if path in ("/", "/index.html"):
+                self._send(html_bytes, "text/html; charset=utf-8")
+            elif path == "/graph.json":
+                # Read fresh on every request so rebuilds in place show up on reload.
+                try:
+                    with open(graph_path, "rb") as f:
+                        data = f.read()
+                except OSError as e:
+                    self.send_error(500, f"failed to read {graph_path}: {e}")
+                    return
+                self._send(data, "application/json")
+            else:
+                self.send_error(404)
+
+        def log_message(self, format, *args):
+            sys.stderr.write(f"[tf-viz] {format % args}\n")
+
+    class ReusableTCPServer(socketserver.TCPServer):
+        allow_reuse_address = True
+
+    url = f"http://localhost:{args.port}/"
+    print(f"Serving graph viewer at {url} (graph: {graph_path})")
+    print("Press Ctrl+C to stop.")
+    if not args.no_open:
+        webbrowser.open(url)
+
+    with ReusableTCPServer(("127.0.0.1", args.port), Handler) as httpd:
         try:
-            os.symlink(graph_path, linked)
-        except OSError:
-            shutil.copyfile(graph_path, linked)
-
-        os.chdir(serve_dir)
-        url = f"http://localhost:{args.port}/"
-        print(f"Serving graph viewer at {url} (graph: {graph_path})")
-        print("Press Ctrl+C to stop.")
-        if not args.no_open:
-            webbrowser.open(url)
-
-        class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
-            def end_headers(self):
-                self.send_header("Cache-Control", "no-store, max-age=0")
-                super().end_headers()
-
-        with socketserver.TCPServer(("127.0.0.1", args.port), NoCacheHandler) as httpd:
-            try:
-                httpd.serve_forever()
-            except KeyboardInterrupt:
-                print()  # newline after ^C
-    finally:
-        shutil.rmtree(serve_dir, ignore_errors=True)
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print()  # newline after ^C
 
 
 if __name__ == "__main__":

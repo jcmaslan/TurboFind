@@ -222,8 +222,16 @@ function runSearch() {
   const results = document.getElementById('results');
   results.innerHTML = '';
   if (!q && !tf) { results.innerHTML = '<div class="row" style="color:#888">type to search</div>'; SEARCH_RESULTS=[]; return; }
-  let rx;
-  try { rx = q ? new RegExp(q,'i') : null; } catch(e) { rx = null; }
+  let rx = null;
+  if (q) {
+    try {
+      rx = new RegExp(q,'i');
+    } catch(e) {
+      results.innerHTML = `<div class="row" style="color:#c66">invalid regex: ${escapeHtml(e.message)}</div>`;
+      SEARCH_RESULTS = [];
+      return;
+    }
+  }
   const out = [];
   for (const n of GRAPH.nodes) {
     if (tf && n.type !== tf) continue;
@@ -235,14 +243,14 @@ function runSearch() {
   for (const n of out) {
     const d = document.createElement('div');
     d.className = 'row';
-    d.innerHTML = `<span class="t">${n.type}</span>${formatId(n.id)}`;
+    d.innerHTML = `<span class="t">${escapeHtml(n.type)}</span>${formatId(n.id)}`;
     d.onclick = () => focusNode(n.id);
     results.appendChild(d);
   }
   if (!out.length) results.innerHTML = '<div class="row" style="color:#888">no matches</div>';
 }
 
-function escapeHtml(s){return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function escapeHtml(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 
 // Render an id with the last path segment (filename + ::Symbol) emphasized.
 // e.g. "a/b/c/Foo.java::Foo.bar" -> <span class=dim>a/b/c/</span><span class=tail>Foo.java::Foo.bar</span>
@@ -300,10 +308,11 @@ async function addNeighborhood(job, id, hops) {
   const seen = new Set([id]);
   addNode(id);
   let processed = 0;
-  // First pass: compute total for progress estimate.
-  while (frontier.length) {
+  // Index-based queue avoids O(n) shift() cost on large neighborhoods.
+  let qi = 0;
+  while (qi < frontier.length) {
     checkCancel(job);
-    const [cur,depth] = frontier.shift();
+    const [cur,depth] = frontier[qi++];
     if (depth >= hops) continue;
     const outs = outgoing ? (OUT.get(cur)||[]) : [];
     const ins  = incoming ? (IN.get(cur)||[])  : [];
@@ -381,11 +390,11 @@ function showDetail(id) {
   const listEdges = arr => arr.slice(0,80).map(e=>{
     const other = e.from===id ? e.to : e.from;
     const arrow = e.from===id ? '→' : '←';
-    return `<li data-id="${escapeHtml(other)}"><span style="color:${EDGE_COLOR[e.type]||'#aaa'}">${e.type}</span> ${arrow} ${formatId(other)}</li>`;
+    return `<li data-id="${escapeHtml(other)}"><span style="color:${EDGE_COLOR[e.type]||'#aaa'}">${escapeHtml(e.type)}</span> ${arrow} ${formatId(other)}</li>`;
   }).join('');
   d.innerHTML = `
     <h3><span style="color:${NODE_COLOR[n.type]}">●</span> ${formatId(id)}</h3>
-    <div class="meta">${n.type} · ${escapeHtml(n.file)}:${n.line}</div>
+    <div class="meta">${escapeHtml(n.type)} · ${escapeHtml(n.file)}:${escapeHtml(n.line)}</div>
     <div><b>out (${outs.length})</b><ul>${listEdges(outs)||'<li style="color:#888">none</li>'}</ul></div>
     <div><b>in (${ins.length})</b><ul>${listEdges(ins)||'<li style="color:#888">none</li>'}</ul></div>
     <div style="margin-top:6px;color:#888" class="kbd">dbl-click node = expand · click = detail</div>
