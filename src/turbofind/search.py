@@ -1,7 +1,7 @@
 import sys
 import json
 import argparse
-from .core import check_ollama, load_index, embed_text, file_sha1, find_project_root, load_file_adjacency, DEFAULT_INDEX
+from .core import check_ollama, load_index, embed_text, file_sha1, find_project_root, load_file_adjacency, TURBOFIND_DIR, GRAPH_FILENAME, DEFAULT_INDEX
 from .config import load_config
 import numpy as np
 
@@ -161,11 +161,16 @@ def _graph_expand(display_list, metadata, project_root, args):
     if not graph_cfg.get("enabled", True):
         return display_list
 
-    adj = load_file_adjacency(project_root, edge_weights=graph_cfg.get("edge_weights"))
-    if not adj:
+    import os
+    graph_path = os.path.join(project_root, TURBOFIND_DIR, GRAPH_FILENAME)
+    if not os.path.exists(graph_path):
         if not _WARNED_MISSING_GRAPH:
             print("[tf-search] .turbofind/graph.json not found — graph expansion disabled", file=sys.stderr)
             _WARNED_MISSING_GRAPH = True
+        return display_list
+
+    adj = load_file_adjacency(project_root, edge_weights=graph_cfg.get("edge_weights"))
+    if not adj:
         return display_list
 
     # Collect seed files (first meta per file preserved)

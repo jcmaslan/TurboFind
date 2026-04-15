@@ -50,6 +50,10 @@ def synthesize_with_claude(filepath, content, project_root, graph=None, graph_in
         }
     ]
 
+    # repo_map is stable across files — always cache it so the global-context
+    # prefix stays warm regardless of whether a per-file subgraph is attached.
+    system_message[-1]["cache_control"] = {"type": "ephemeral"}
+
     subgraph_xml = None
     if graph:
         sub = build_file_subgraph(graph, filepath, index=graph_index)
@@ -57,14 +61,11 @@ def synthesize_with_claude(filepath, content, project_root, graph=None, graph_in
             subgraph_xml = graph_to_xml(sub)
 
     if subgraph_xml:
+        # Per-file subgraph varies every request; no cache_control here.
         system_message.append({
             "type": "text",
             "text": f"<global_ast_graph>\n{subgraph_xml}\n</global_ast_graph>",
-            "cache_control": {"type": "ephemeral"}
         })
-    else:
-        # Fallback to caching the repo map if no subgraph available
-        system_message[-1]["cache_control"] = {"type": "ephemeral"}
 
     model = os.environ.get("TURBOFIND_MODEL", DEFAULT_MODEL)
 
