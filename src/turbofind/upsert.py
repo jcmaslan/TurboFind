@@ -538,9 +538,13 @@ def main():
         confirmed_over_limit = False
 
         try:
-            for filepath in files:
-                if processed >= max_files:
-                    remaining = len(files) - processed - skipped
+            # Cap by attempted paths (not just processed) so Phase 2 stays
+            # aligned with the first max_files entries Phase 1 extracted into
+            # graph.json — otherwise skipped files let Phase 2 drift past
+            # Phase 1's slice and index files with no subgraph coverage.
+            for attempted, filepath in enumerate(files):
+                if attempted >= max_files:
+                    remaining = len(files) - attempted
                     print(f"\nReached --max-files limit ({max_files}). {remaining} files remaining.")
                     break
 
