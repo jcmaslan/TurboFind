@@ -155,6 +155,105 @@ def graph_to_xml(graph_dict):
     return "\n".join(lines)
 
 
+_ADJ_CACHE = {}  # (root, weights_key) -> {"mtime": ..., "adj": ...}
+_EDGE_WEIGHTS = {"imports": 1.0, "extends": 0.8, "calls": 0.5}
+
+
+def load_file_adjacency(project_root=None, edge_weights=None):
+    """Return {file: {neighbor_file: max_edge_weight}}, cached by graph.json mtime
+    and effective edge_weights. Collapses node-level edges to file-file pairs,
+    keeping the max weight across edge types; symmetrizes; skips self-loops.
+    Returns {} if graph is absent.
+    """
+    root = project_root or find_project_root()
+    graph_path = os.path.join(root, TURBOFIND_DIR, GRAPH_FILENAME)
+    if not os.path.exists(graph_path):
+        return {}
+
+    weights = _EDGE_WEIGHTS if edge_weights is None else edge_weights
+    weights_key = tuple(sorted(weights.items()))
+    cache_key = (root, weights_key)
+    mtime = os.path.getmtime(graph_path)
+    entry = _ADJ_CACHE.get(cache_key)
+    if entry and entry["mtime"] == mtime:
+        return entry["adj"]
+
+    with open(graph_path, 'r') as f:
+        graph = json.load(f)
+
+    node_to_file = {n["id"]: n["file"] for n in graph.get("nodes", [])}
+    adj = {}
+    for edge in graph.get("edges", []):
+        fa = node_to_file.get(edge["from"])
+        fb = node_to_file.get(edge["to"])
+        if not fa or not fb or fa == fb:
+            continue
+        w = weights.get(edge.get("type", "calls"), 0.0)
+        if w <= 0:
+            continue
+        if adj.setdefault(fa, {}).get(fb, 0.0) < w:
+            adj[fa][fb] = w
+        if adj.setdefault(fb, {}).get(fa, 0.0) < w:
+            adj[fb][fa] = w
+
+    _ADJ_CACHE[cache_key] = {"mtime": mtime, "adj": adj}
+    return adj
+
+
+def index_graph(graph_dict):
+    """Pre-index a graph dict for O(local_degree) per-file subgraph slicing.
+    Returns (nodes_by_id, file_to_local_ids, node_to_incident_edges)."""
+    nodes_by_id = {n["id"]: n for n in graph_dict.get("nodes", [])}
+    file_to_local_ids = {}
+    for n in graph_dict.get("nodes", []):
+        file_to_local_ids.setdefault(n.get("file"), set()).add(n["id"])
+    node_to_edges = {}
+    for edge in graph_dict.get("edges", []):
+        node_to_edges.setdefault(edge["from"], []).append(edge)
+        if edge["to"] != edge["from"]:
+            node_to_edges.setdefault(edge["to"], []).append(edge)
+    return nodes_by_id, file_to_local_ids, node_to_edges
+
+
+def build_file_subgraph(graph_dict, file_path, index=None):
+    """Return a {'nodes': [...], 'edges': [...]} slice centered on file_path:
+    all nodes belonging to the file, every edge touching one of those nodes,
+    and the opposite-endpoint nodes. Accepts an optional pre-built index from
+    index_graph() to avoid O(n) scans per call.
+    """
+    if index is None:
+        index = index_graph(graph_dict)
+    nodes_by_id, file_to_local_ids, node_to_edges = index
+
+    local_ids = file_to_local_ids.get(file_path, set())
+    if not local_ids:
+        return {"nodes": [], "edges": []}
+
+    kept_edges = []
+    seen = set()
+    included_ids = set(local_ids)
+    for nid in local_ids:
+        for edge in node_to_edges.get(nid, []):
+            key = (edge["from"], edge["to"], edge.get("type"))
+            if key in seen:
+                continue
+            seen.add(key)
+            kept_edges.append(edge)
+            included_ids.add(edge["from"])
+            included_ids.add(edge["to"])
+
+    # Deterministic ordering keeps prompt-cache hits stable across runs
+    nodes = sorted(
+        (nodes_by_id[nid] for nid in included_ids if nid in nodes_by_id),
+        key=lambda n: (n.get("file", ""), n.get("line", 0), n["id"]),
+    )
+    kept_edges = sorted(
+        kept_edges,
+        key=lambda e: (e["from"], e["to"], e.get("type", "")),
+    )
+    return {"nodes": nodes, "edges": kept_edges}
+
+
 def load_graph_as_nx(project_root=None):
     """Load graph.json and reconstruct a NetworkX MultiDiGraph for querying."""
     import networkx as nx

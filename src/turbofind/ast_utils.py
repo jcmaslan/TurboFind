@@ -56,15 +56,22 @@ _CALL_TYPES = {
 }
 
 
+_PARSER_CACHE = {}
+
+
 def get_parser(language: str):
+    if language in _PARSER_CACHE:
+        return _PARSER_CACHE[language]
     module = _LANGUAGE_MODULES.get(language)
     if not module:
+        _PARSER_CACHE[language] = None
         return None
     parser = tree_sitter.Parser()
     if language == "typescript":
         parser.language = tree_sitter.Language(module.language_typescript())
     else:
         parser.language = tree_sitter.Language(module.language())
+    _PARSER_CACHE[language] = parser
     return parser
 
 
