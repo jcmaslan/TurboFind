@@ -102,3 +102,15 @@ Fix options:
 2. Hand the subprocess the already-resolved absolute paths directly (Copilot's suggestion) — simple but risks ARG_MAX on very large repos.
 
 Option 1 is the cleaner long-term fix; option 2 is a 1-line change that works for typical repos (< a few thousand files). Pick option 1 when this becomes a real bottleneck.
+
+## TODO: Vendor Cytoscape (or add SRI) for `tf-viz`
+
+**Status:** deferred.
+
+`src/turbofind/viz_assets/index.html` loads Cytoscape from `https://unpkg.com/cytoscape@<version>/dist/cytoscape.min.js` without Subresource Integrity. This is a mild supply-chain exposure and a hard failure in offline/restricted environments. Today we at least detect the failure case (the page shows a clear "Cytoscape failed to load" message instead of silently breaking).
+
+Options:
+1. Add `integrity="sha384-..."` + `crossorigin="anonymous"` attributes to the `<script>` tag. Pinning SRI per version is a maintenance cost when bumping Cytoscape.
+2. Vendor `cytoscape.min.js` (~500 KB) under `src/turbofind/viz_assets/` and load it relatively. Adds to wheel size, but makes the viewer fully offline-capable and trust-pinned to what we ship. Serve it via a new `/cytoscape.min.js` route in `viz.py`.
+
+Option 2 is the cleaner long-term answer. Do it if we see offline/air-gapped users or want hermetic builds.

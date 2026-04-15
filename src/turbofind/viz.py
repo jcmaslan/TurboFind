@@ -25,7 +25,13 @@ def main():
         print("Run `tf-upsert . --graph-only` to build it.", file=sys.stderr)
         sys.exit(1)
 
-    html_bytes = files("turbofind.viz_assets").joinpath("index.html").read_bytes()
+    try:
+        html_bytes = files("turbofind.viz_assets").joinpath("index.html").read_bytes()
+    except (ModuleNotFoundError, FileNotFoundError, OSError) as e:
+        print("error: failed to load bundled graph viewer assets (missing index.html).", file=sys.stderr)
+        print("Reinstall TurboFind or ensure package data for `turbofind.viz_assets` is included.", file=sys.stderr)
+        print(f"Details: {e}", file=sys.stderr)
+        sys.exit(1)
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def _send(self, body, ctype):
@@ -35,6 +41,21 @@ def main():
             self.send_header("Cache-Control", "no-store, max-age=0")
             self.end_headers()
             self.wfile.write(body)
+
+        def send_error(self, code, message=None, explain=None):
+            # Ensure error responses carry the same no-store policy so
+            # browsers/proxies don't cache transient failures.
+            try:
+                self.send_response(code, message)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Cache-Control", "no-store, max-age=0")
+                body = (explain or message or http.HTTPStatus(code).phrase).encode("utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(body)
+            except Exception:
+                super().send_error(code, message, explain)
 
         def do_GET(self):
             path = self.path.split("?", 1)[0]

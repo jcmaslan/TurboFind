@@ -45,8 +45,8 @@
 <div id="app">
   <div id="side">
     <div id="search">
-      <input id="q" placeholder="search id / file / name… (regex ok)" autofocus>
-      <select id="typeFilter">
+      <input id="q" placeholder="search id / file / name… (regex ok)" autofocus aria-label="Search node ids (regex supported)">
+      <select id="typeFilter" aria-label="Filter by node type">
         <option value="">all types</option>
         <option value="module">module</option>
         <option value="class">class</option>
@@ -155,6 +155,10 @@ async function load() {
     IN.get(e.to).push(e);
   }
   stats.textContent = `${GRAPH.nodes.length.toLocaleString()} nodes · ${GRAPH.edges.length.toLocaleString()} edges`;
+  if (typeof window.cytoscape !== 'function') {
+    stats.textContent = 'Cytoscape failed to load from CDN — check your network connection and reload.';
+    return;
+  }
   initCy();
   runSearch();
 }
