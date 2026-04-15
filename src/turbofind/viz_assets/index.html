@@ -255,7 +255,7 @@ function escapeHtml(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'
 // Render an id with the last path segment (filename + ::Symbol) emphasized.
 // e.g. "a/b/c/Foo.java::Foo.bar" -> <span class=dim>a/b/c/</span><span class=tail>Foo.java::Foo.bar</span>
 function formatId(id) {
-  const i = id.lastIndexOf('/');
+  const i = Math.max(id.lastIndexOf('/'), id.lastIndexOf('\\'));
   if (i < 0) return `<span class="tail">${escapeHtml(id)}</span>`;
   return `<span class="dim">${escapeHtml(id.slice(0,i+1))}</span><span class="tail">${escapeHtml(id.slice(i+1))}</span>`;
 }

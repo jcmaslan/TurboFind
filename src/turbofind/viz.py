@@ -59,12 +59,13 @@ def main():
         allow_reuse_address = True
 
     url = f"http://localhost:{args.port}/"
-    print(f"Serving graph viewer at {url} (graph: {graph_path})")
-    print("Press Ctrl+C to stop.")
-    if not args.no_open:
-        webbrowser.open(url)
-
     with ReusableTCPServer(("127.0.0.1", args.port), Handler) as httpd:
+        print(f"Serving graph viewer at {url} (graph: {graph_path})")
+        print("Press Ctrl+C to stop.")
+        # Open the browser only after the socket is bound so the first tab
+        # doesn't race into a connection-refused error on slow machines.
+        if not args.no_open:
+            webbrowser.open(url)
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
