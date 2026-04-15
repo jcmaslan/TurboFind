@@ -8,10 +8,10 @@ import glob as globlib
 from anthropic import Anthropic, RateLimitError
 from .core import (check_ollama, load_index, save_index, embed_text,
                    find_project_root, index_lock, file_sha1, text_sha1,
-                   load_graph, save_graph, graph_to_xml, DEFAULT_INDEX)
+                   load_graph, save_graph, graph_to_xml, build_file_subgraph, DEFAULT_INDEX)
 from .prompts import SYSTEM_PROMPT
 from .ast_utils import extract_definitions, extract_calls, extract_imports, build_topology
-from .config import load_config, load_exclusion_spec, check_file_limits, estimate_file, check_graph_budget, compute_actual_cost, SOURCE_EXTENSIONS
+from .config import load_config, load_exclusion_spec, check_file_limits, estimate_file, compute_actual_cost, SOURCE_EXTENSIONS
 import numpy as np
 
 CHUNK_SIZE = 100
@@ -31,7 +31,7 @@ def nuke_file(filepath, index, metadata):
         del metadata[vid]
     return len(ids_to_remove)
 
-def synthesize_with_claude(filepath, content, project_root, graph_xml=None):
+def synthesize_with_claude(filepath, content, project_root, graph=None):
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY environment variable is not set.")
@@ -50,14 +50,20 @@ def synthesize_with_claude(filepath, content, project_root, graph_xml=None):
         }
     ]
 
-    if graph_xml:
+    subgraph_xml = None
+    if graph:
+        sub = build_file_subgraph(graph, filepath)
+        if sub["nodes"]:
+            subgraph_xml = graph_to_xml(sub)
+
+    if subgraph_xml:
         system_message.append({
             "type": "text",
-            "text": f"<global_ast_graph>\n{graph_xml}\n</global_ast_graph>",
+            "text": f"<global_ast_graph>\n{subgraph_xml}\n</global_ast_graph>",
             "cache_control": {"type": "ephemeral"}
         })
     else:
-        # Fallback to caching the repo map if no graph
+        # Fallback to caching the repo map if no subgraph available
         system_message[-1]["cache_control"] = {"type": "ephemeral"}
 
     model = os.environ.get("TURBOFIND_MODEL", DEFAULT_MODEL)
@@ -109,7 +115,7 @@ def get_unique_id():
     return uuid.uuid4().int >> 64
 
 
-def upsert_single_file(filepath, project_root, index, metadata, graph_xml=None):
+def upsert_single_file(filepath, project_root, index, metadata, graph=None):
     """Process a single file through the full Nuke-Synthesize-Chunk-Embed-Pave pipeline."""
     rel_path = os.path.relpath(filepath, project_root)
 
@@ -123,17 +129,19 @@ def upsert_single_file(filepath, project_root, index, metadata, graph_xml=None):
     content_hash = text_sha1(content)
 
     print(f"  Synthesizing with Claude...")
-    synthesis, usage = synthesize_with_claude(rel_path, content, project_root, graph_xml)
+    synthesis, usage = synthesize_with_claude(rel_path, content, project_root, graph)
 
     actual_cost = compute_actual_cost(usage)
     severity = extract_xml_tag(synthesis, "legacy_coupling_severity")
     core_intent = extract_xml_tag(synthesis, "core_intent")
+    key_symbols = extract_xml_tag(synthesis, "key_symbols")
     print(f"  Synthesis complete (severity: {severity}/10, actual: ${actual_cost:.4f})")
 
     chunks = chunk_file(rel_path, content)
 
+    symbol_line = f"\n\nKey symbols: {key_symbols}" if key_symbols and key_symbols != "None" else ""
     for chunk in chunks:
-        contextualized_chunk = f"{synthesis}\n\n--- Source Code ---\n{chunk['content']}"
+        contextualized_chunk = f"{synthesis}{symbol_line}\n\n--- Source Code ---\n{chunk['content']}"
         vector = embed_text(contextualized_chunk, prefix="search_document: ")
 
         vid = get_unique_id()
@@ -223,7 +231,21 @@ def resolve_paths(args_paths, project_root, exclusion_spec):
     return all_files
 
 
+def _ensure_safe_allocator():
+    """On macOS, tree-sitter + usearch + httpx trip the nano malloc zone's
+    free-list invariants. Re-exec once with MallocNanoZone=0 to sidestep it."""
+    if sys.platform != "darwin":
+        return
+    if os.environ.get("_TURBOFIND_ALLOC_FIXED") == "1":
+        return
+    env = os.environ.copy()
+    env["MallocNanoZone"] = "0"
+    env["_TURBOFIND_ALLOC_FIXED"] = "1"
+    os.execvpe(sys.executable, [sys.executable, "-m", "turbofind.upsert"] + sys.argv[1:], env)
+
+
 def main():
+    _ensure_safe_allocator()
     parser = argparse.ArgumentParser(description="TurboFind: Semantic index upsert")
     parser.add_argument("paths", nargs="*", help="File path(s) or glob pattern(s) to index")
     parser.add_argument("--index", default=DEFAULT_INDEX, help=f"Named index to upsert into (default: {DEFAULT_INDEX})")
@@ -367,12 +389,13 @@ def main():
             print("No files matched after applying exclusions.")
             sys.exit(0)
 
-        print("Building topology graph...")
+        print(f"Building topology graph ({len(files)} files)...")
         all_defs = []
         all_calls = []
         all_imps = []
         successfully_extracted = set()
-        for filepath in files:
+        total = len(files)
+        for i, filepath in enumerate(files, 1):
             rel_path = os.path.relpath(filepath, project_root)
             try:
                 with open(filepath, 'r') as f:
@@ -382,7 +405,11 @@ def main():
                 all_imps.extend(extract_imports(rel_path, content))
                 successfully_extracted.add(rel_path)
             except Exception as e:
-                print(f"  Skipped topology for {rel_path}: {e}")
+                print(f"\n  Skipped topology for {rel_path}: {e}")
+            sys.stdout.write(f"\r  [{i}/{total}] extracted — {len(all_defs)} defs, {len(all_calls)} calls, {len(all_imps)} imports")
+            sys.stdout.flush()
+            if i == total:
+                sys.stdout.write("\n")
 
         with index_lock(project_root):
             graph = load_graph(project_root=project_root)
@@ -467,51 +494,19 @@ def main():
         print(e)
         sys.exit(1)
 
-    # ── Phase 1: Build complete topology graph (fast, no API calls) ──
-    print("Building topology graph...")
-    all_defs = []
-    all_calls = []
-    all_imps = []
-    successfully_extracted = set()
-    for filepath in files[:max_files]:
-        rel_path = os.path.relpath(filepath, project_root)
-        try:
-            with open(filepath, 'r') as f:
-                content = f.read()
-            all_defs.extend(extract_definitions(rel_path, content))
-            all_calls.extend(extract_calls(rel_path, content))
-            all_imps.extend(extract_imports(rel_path, content))
-            successfully_extracted.add(rel_path)
-        except Exception as e:
-            print(f"  Skipped topology for {rel_path}: {e}")
-
-    # Load existing graph and merge — only replace files whose extraction succeeded
+    # ── Phase 1: Build topology in a subprocess ──
+    # tree-sitter's Python bindings corrupt the heap when many Parser/Tree
+    # objects are allocated and freed in-process; running Phase 1 in a child
+    # process isolates that damage so Phase 2 (usearch + HTTP) runs cleanly.
+    import subprocess
+    subprocess_cmd = [sys.executable, "-m", "turbofind.upsert", "--graph-only",
+                      "--index", args.index] + list(args.paths)
+    result = subprocess.run(subprocess_cmd)
+    if result.returncode != 0:
+        print("Topology build failed; aborting.")
+        sys.exit(result.returncode)
     graph = load_graph(project_root=project_root)
-    existing_nodes = [n for n in graph.get("nodes", []) if n["file"] not in successfully_extracted]
-    existing_defs = [{"id": n["id"], "file": n["file"], "type": n["type"], "line": n["line"]}
-                     for n in existing_nodes]
-    combined_defs = existing_defs + all_defs
-    topo = build_topology(combined_defs, all_calls, all_imps)
-    final_node_ids = set(topo.nodes)
-    new_edges = [{"from": u, "to": v, "type": d.get("type", "calls")}
-                 for u, v, d in topo.edges(data=True)]
-    # Preserve old edges only from non-re-extracted source nodes,
-    # if both endpoints still exist, to avoid retaining stale edges
-    reextracted_node_ids = {d["id"] for d in all_defs}
-    preserved_edges = [e for e in graph.get("edges", [])
-                       if e["from"] in final_node_ids
-                       and e["to"] in final_node_ids
-                       and e["from"] not in reextracted_node_ids]
-    graph["nodes"] = [{"id": n, **topo.nodes[n]} for n in topo.nodes]
-    graph["edges"] = new_edges + preserved_edges
-
-    graph_xml = graph_to_xml(graph)
-    budget = config.get("graph", {}).get("max_tokens", 128000)
-    if not check_graph_budget(graph_xml, budget):
-        print(f"Graph exceeds token budget ({len(graph_xml)//4} est. tokens), skipping topology injection")
-        graph_xml = None
-    else:
-        print(f"Topology: {len(graph['nodes'])} definitions, {len(graph['edges'])} edges (~{len(graph_xml)//4} tokens)")
+    print(f"Topology: {len(graph['nodes'])} definitions, {len(graph['edges'])} edges (per-file 1-hop subgraphs injected at synthesis)")
 
     # ── Phase 2: Synthesize + embed (API calls) ──
     with index_lock(project_root):
@@ -555,7 +550,7 @@ def main():
                 print(f"[{processed+1}/{min(len(files), max_files)}] {rel_path}")
 
                 try:
-                    _, file_cost = upsert_single_file(filepath, project_root, index, metadata, graph_xml=graph_xml)
+                    _, file_cost = upsert_single_file(filepath, project_root, index, metadata, graph=graph)
                     actual_cost += file_cost
                     processed += 1
                 except Exception as e:

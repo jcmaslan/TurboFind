@@ -155,6 +155,75 @@ def graph_to_xml(graph_dict):
     return "\n".join(lines)
 
 
+_ADJ_CACHE = {"mtime": None, "adj": None, "root": None}
+_EDGE_WEIGHTS = {"imports": 1.0, "extends": 0.8, "calls": 0.5}
+
+
+def load_file_adjacency(project_root=None, edge_weights=None):
+    """Return {file: {neighbor_file: max_edge_weight}}, cached by graph.json mtime.
+    Collapses node-level edges to file-file pairs, keeping the max weight across
+    edge types; symmetrizes; skips self-loops. Returns {} if graph is absent.
+    """
+    root = project_root or find_project_root()
+    graph_path = os.path.join(root, TURBOFIND_DIR, GRAPH_FILENAME)
+    if not os.path.exists(graph_path):
+        return {}
+
+    mtime = os.path.getmtime(graph_path)
+    if (_ADJ_CACHE["mtime"] == mtime
+            and _ADJ_CACHE["root"] == root
+            and _ADJ_CACHE["adj"] is not None
+            and edge_weights is None):
+        return _ADJ_CACHE["adj"]
+
+    weights = edge_weights or _EDGE_WEIGHTS
+    with open(graph_path, 'r') as f:
+        graph = json.load(f)
+
+    node_to_file = {n["id"]: n["file"] for n in graph.get("nodes", [])}
+    adj = {}
+    for edge in graph.get("edges", []):
+        fa = node_to_file.get(edge["from"])
+        fb = node_to_file.get(edge["to"])
+        if not fa or not fb or fa == fb:
+            continue
+        w = weights.get(edge.get("type", "calls"), 0.0)
+        if w <= 0:
+            continue
+        if adj.setdefault(fa, {}).get(fb, 0.0) < w:
+            adj[fa][fb] = w
+        if adj.setdefault(fb, {}).get(fa, 0.0) < w:
+            adj[fb][fa] = w
+
+    if edge_weights is None:
+        _ADJ_CACHE["mtime"] = mtime
+        _ADJ_CACHE["root"] = root
+        _ADJ_CACHE["adj"] = adj
+    return adj
+
+
+def build_file_subgraph(graph_dict, file_path):
+    """Return a {'nodes': [...], 'edges': [...]} slice centered on file_path:
+    all nodes belonging to the file, every edge touching one of those nodes,
+    and the opposite-endpoint nodes (so the XML is self-describing).
+    """
+    nodes_by_id = {n["id"]: n for n in graph_dict.get("nodes", [])}
+    local_ids = {n["id"] for n in graph_dict.get("nodes", []) if n.get("file") == file_path}
+    if not local_ids:
+        return {"nodes": [], "edges": []}
+
+    kept_edges = []
+    included_ids = set(local_ids)
+    for edge in graph_dict.get("edges", []):
+        if edge["from"] in local_ids or edge["to"] in local_ids:
+            kept_edges.append(edge)
+            included_ids.add(edge["from"])
+            included_ids.add(edge["to"])
+
+    nodes = [nodes_by_id[nid] for nid in included_ids if nid in nodes_by_id]
+    return {"nodes": nodes, "edges": kept_edges}
+
+
 def load_graph_as_nx(project_root=None):
     """Load graph.json and reconstruct a NetworkX MultiDiGraph for querying."""
     import networkx as nx

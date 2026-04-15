@@ -1,7 +1,8 @@
 import sys
 import json
 import argparse
-from .core import check_ollama, load_index, embed_text, file_sha1, find_project_root, DEFAULT_INDEX
+from .core import check_ollama, load_index, embed_text, file_sha1, find_project_root, load_file_adjacency, DEFAULT_INDEX
+from .config import load_config
 import numpy as np
 
 def _check_stale(meta, project_root):
@@ -39,6 +40,8 @@ def main():
     parser.add_argument("--floor", type=float, default=0.55, help="Absolute floor score below which results are discarded")
     parser.add_argument("--visual", action="store_true", help="Show colored score bars (for human use, not agent consumption)")
     parser.add_argument("--json", dest="json_output", action="store_true", help="Output results as JSON (for agent consumption)")
+    parser.add_argument("--no-graph", action="store_true", help="Disable graph-expanded retrieval (seeds-only)")
+    parser.add_argument("--graph-weight", type=float, default=None, help="RRF weight on graph-expansion rank (default from config, 1.0)")
     args = parser.parse_args()
 
     try:
@@ -95,6 +98,10 @@ def main():
             seen[dedup_key] = True
             display_list.append((sim, meta))
 
+    # ── Graph expansion + RRF fusion ──
+    if not args.no_graph and display_list:
+        display_list = _graph_expand(display_list, metadata, project_root, args)
+
     if not display_list:
         print(f'tf-search "{args.query}" -- no results found.')
         sys.exit(0)
@@ -104,7 +111,7 @@ def main():
         json_results = []
         for sim, meta in display_list:
             entry = dict(meta)
-            entry["score"] = round(sim, 4)
+            entry["score"] = round(float(sim), 4)
             entry["index"] = args.index
             entry["stale"] = _check_stale(meta, project_root)
             json_results.append(entry)
@@ -130,6 +137,95 @@ def main():
         for idx, (sim, meta) in enumerate(display_list, 1):
             kind = meta.get("kind", "file")
             _print_text_result(idx, sim, meta, kind, project_root)
+
+
+_WARNED_MISSING_GRAPH = False
+
+
+def _rrf(ranked_lists, k=60, weights=None):
+    fused = {}
+    weights = weights or [1.0] * len(ranked_lists)
+    for idx, lst in enumerate(ranked_lists):
+        w = weights[idx]
+        for rank, item in enumerate(lst):
+            fused[item] = fused.get(item, 0.0) + w / (k + rank + 1)
+    return sorted(fused, key=lambda x: -fused[x])
+
+
+def _graph_expand(display_list, metadata, project_root, args):
+    """Augment display_list with 1-hop graph neighbors fused via RRF."""
+    global _WARNED_MISSING_GRAPH
+
+    config = load_config(project_root)
+    graph_cfg = config["search"]["graph"]
+    if not graph_cfg.get("enabled", True):
+        return display_list
+
+    adj = load_file_adjacency(project_root, edge_weights=graph_cfg.get("edge_weights"))
+    if not adj:
+        if not _WARNED_MISSING_GRAPH:
+            print("[tf-search] .turbofind/graph.json not found — graph expansion disabled", file=sys.stderr)
+            _WARNED_MISSING_GRAPH = True
+        return display_list
+
+    # Collect seed files (first meta per file preserved)
+    seed_files = {}
+    seed_meta = {}
+    for sim, meta in display_list:
+        if meta.get("kind") != "file":
+            continue
+        fp = meta.get("file_path")
+        if fp and fp not in seed_files:
+            seed_files[fp] = sim
+            seed_meta[fp] = meta
+    if not seed_files:
+        return display_list
+
+    decay = float(graph_cfg.get("decay", 0.7))
+    neighbor_scores = {}
+    for sf, s_sim in seed_files.items():
+        for nbr, w in adj.get(sf, {}).items():
+            if nbr in seed_files:
+                continue
+            neighbor_scores[nbr] = neighbor_scores.get(nbr, 0.0) + s_sim * w * decay
+
+    # Best representative meta per file (prefer earliest chunk)
+    file_to_meta = {}
+    for m in metadata.values():
+        if m.get("kind") != "file":
+            continue
+        fp = m.get("file_path")
+        if not fp:
+            continue
+        existing = file_to_meta.get(fp)
+        if existing is None or m.get("start_line", 10**9) < existing.get("start_line", 10**9):
+            file_to_meta[fp] = m
+
+    seed_ranked = [fp for fp, _ in sorted(seed_files.items(), key=lambda kv: -kv[1])]
+    graph_ranked = [fp for fp, _ in sorted(neighbor_scores.items(), key=lambda kv: -kv[1])
+                    if fp in file_to_meta]
+
+    if not graph_ranked:
+        return display_list
+
+    graph_weight = args.graph_weight if args.graph_weight is not None else float(graph_cfg.get("graph_weight", 1.0))
+    if graph_weight <= 0:
+        return display_list
+    fused_order = _rrf([seed_ranked, graph_ranked], weights=[1.0, graph_weight])
+
+    min_seed_sim = min(seed_files.values())
+    new_display = []
+    for fp in fused_order:
+        if fp in seed_meta:
+            new_display.append((seed_files[fp], seed_meta[fp]))
+        else:
+            synthetic = min(neighbor_scores[fp], 0.95 * min_seed_sim)
+            new_display.append((synthetic, file_to_meta[fp]))
+    # Preserve non-file entries in their original order
+    for sim, meta in display_list:
+        if meta.get("kind") != "file":
+            new_display.append((sim, meta))
+    return new_display
 
 
 def _print_text_result(idx, sim, meta, kind, project_root):

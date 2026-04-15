@@ -12,7 +12,6 @@ DEFAULT_MAX_LINES = 2000
 DEFAULT_MAX_FILES = 100
 DEFAULT_COST_LIMIT = 5.00
 DEFAULT_MAX_DEPTH = 4
-DEFAULT_GRAPH_MAX_TOKENS = 128000
 
 # Files that are git-tracked but should not be indexed
 DEFAULT_EXTRA_EXCLUDES = ["*.lock", "*.min.js", "*.min.css", "*.map"]
@@ -50,9 +49,14 @@ def load_config(project_root):
         "exclude": {
             "patterns": list(DEFAULT_EXTRA_EXCLUDES),
         },
-        "graph": {
-            "max_tokens": DEFAULT_GRAPH_MAX_TOKENS,
-        }
+        "search": {
+            "graph": {
+                "enabled": True,
+                "decay": 0.7,
+                "graph_weight": 1.0,
+                "edge_weights": {"imports": 1.0, "extends": 0.8, "calls": 0.5},
+            },
+        },
     }
 
     toml_path = os.path.join(project_root, ".turbofind.toml")
@@ -60,9 +64,11 @@ def load_config(project_root):
         with open(toml_path, "rb") as f:
             user_config = tomli.load(f)
         # Merge user overrides
-        for section in ["per_file", "per_batch", "exclude", "graph"]:
+        for section in ["per_file", "per_batch", "exclude"]:
             if section in user_config:
                 config[section].update(user_config[section])
+        if "search" in user_config and "graph" in user_config["search"]:
+            config["search"]["graph"].update(user_config["search"]["graph"])
 
     return config
 
@@ -102,19 +108,6 @@ def check_file_limits(filepath, config):
 CLAUDE_LATENCY_MS = 1500       # avg Claude API round-trip for synthesis
 OLLAMA_EMBED_LATENCY_MS = 150  # avg Ollama embedding call per chunk
 CHUNK_SIZE = 100               # lines per chunk (must match upsert.py)
-
-
-def check_graph_budget(graph_xml, budget):
-    """Return True if the graph XML is within the token budget.
-
-    Estimates token count from the XML string (rough heuristic: 1 token per 4 chars).
-
-    NOTE: In a future TTT-capable model, the budget strategy would be
-    dynamically determined by the model based on its context capacity and the
-    structural importance of each file.
-    """
-    estimated_tokens = len(graph_xml) // 4
-    return estimated_tokens < budget
 
 
 def estimate_file(filepath):
